@@ -1,9 +1,9 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go
-import joblib
+import plotly.express as px       # высокоуровневые графики: гистограммы, scatter, heatmap
+import plotly.graph_objects as go # низкоуровневые графики: Waterfall (SHAP)
+import joblib                     # загрузка сохранённой модели из model.pkl
 import datetime
 from ml_engine import UniversalMLEngine
 
@@ -13,20 +13,21 @@ st.set_page_config(page_title="Universal ML Platform", layout="wide")
 # ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЙ
 # ==========================================
 defaults = {
-    'is_trained':         False,
-    'train_df':           None,
-    'custom_features':    [],
-    'task_type':          None,
-    'metrics':            {},
-    'explanation':        '',
-    'trained_model_name': '',
-    'features':           [],
-    'conf_matrix':        None,
-    'class_labels':       None,
-    'experiment_history': [],
-    # Лог всех действий очистки — используется для генерации .py скрипта
+    'is_trained':         False,   # флаг: обучена ли модель — управляет показом результатов
+    'train_df':           None,    # датафрейм без целевой колонки — для SHAP и тестера
+    'custom_features':    [],      # названия признаков созданных через Feature Engineering
+    'task_type':          None,    # 'classification' или 'regression' — определяется автоматически
+    'metrics':            {},      # словарь метрик последнего обучения
+    'explanation':        '',      # текстовое объяснение модели
+    'trained_model_name': '',      # название алгоритма — нужно при загрузке для SHAP
+    'features':           [],      # список признаков в правильном порядке
+    'conf_matrix':        None,    # матрица ошибок (только для классификации)
+    'class_labels':       None,    # отсортированный список классов
+    'experiment_history': [],      # журнал всех запусков — НЕ сбрасывается при смене датасета
+    # Лог действий очистки — используется для генерации воспроизводимого .py-скрипта.
     'cleaning_log':       [],
 }
+# Проверяем "если нет — создай". Без этой проверки перезапуск скрипта
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -37,7 +38,16 @@ for k, v in defaults.items():
 # ==========================================
 def generate_script(record: dict, cleaning_log: list, dataset_filename: str) -> str:
     """
-    Генерирует полностью воспроизводимый .py скрипт по записи эксперимента и логу очистки.
+    Генерирует полностью воспроизводимый .py-скрипт по записи эксперимента.
+
+    Принцип работы:
+    1. Из record извлекаем метаданные (модель, таргет, задача, параметры Optuna)
+    2. Из cleaning_log восстанавливаем шаги очистки в том порядке, в котором они применялись
+    3. Собираем список строк (lines) и объединяем через join('\n')
+
+    Важно: параметры Optuna вшиваются напрямую (n_estimators=120, learning_rate=0.066),
+    поэтому при запуске скрипта повторный поиск гиперпараметров не нужен.
+
     """
     model_name   = record.get("Модель", "Random Forest")
     target_col   = record.get("Target", "target")
@@ -52,7 +62,7 @@ def generate_script(record: dict, cleaning_log: list, dataset_filename: str) -> 
     use_cv   = cv_mode != "hold-out"
     cv_folds = int(cv_mode.replace("-fold", "")) if use_cv else 5
 
-    # --- Импорты ---
+    # Заголовок с метаданными — документирует откуда взялся скрипт
     lines = [
         "# =============================================================",
         f"# Автоматически сгенерированный скрипт",
@@ -76,7 +86,7 @@ def generate_script(record: dict, cleaning_log: list, dataset_filename: str) -> 
         "from sklearn.preprocessing import OrdinalEncoder, StandardScaler",
     ]
 
-    # Метрики
+    # Импортируем только нужные метрики в зависимости от типа задачи
     if task_type == "classification":
         lines += [
             "from sklearn.metrics import accuracy_score, precision_score, recall_score, confusion_matrix",
@@ -86,7 +96,7 @@ def generate_script(record: dict, cleaning_log: list, dataset_filename: str) -> 
             "from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error",
         ]
 
-    # Модель
+    # Импорты алгоритмов — подбираются под конкретную модель эксперимента
     model_imports = {
         "Random Forest":       ("from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor", ),
         "Gradient Boosting":   ("from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor", ),
@@ -102,7 +112,7 @@ def generate_script(record: dict, cleaning_log: list, dataset_filename: str) -> 
 
     lines += ["import joblib", "import optuna", ""]
 
-    # --- Загрузка данных ---
+    # Раздел 1: загрузка данных
     lines += [
         "# =============================================================",
         "# 1. ЗАГРУЗКА ДАННЫХ",
@@ -112,7 +122,7 @@ def generate_script(record: dict, cleaning_log: list, dataset_filename: str) -> 
         "",
     ]
 
-    # --- Стандартный EDA ---
+    # Раздел 2: EDA — стандартный набор проверок.
     lines += [
         "# =============================================================",
         "# 2. РАЗВЕДОЧНЫЙ АНАЛИЗ ДАННЫХ (EDA)",
@@ -157,7 +167,7 @@ def generate_script(record: dict, cleaning_log: list, dataset_filename: str) -> 
         "        print(f'  {_col}: {_n_out} выбросов')",
         "",    ]
 
-    # --- Очистка ---
+    # Раздел 3: очистка — воспроизводим только те шаги что реально применялись в UI.
     if cleaning_log:
         lines += [
             "# =============================================================",
@@ -225,7 +235,7 @@ def generate_script(record: dict, cleaning_log: list, dataset_filename: str) -> 
             "",
         ]
 
-    # --- Подготовка X, y ---
+    # Раздел X: подготовка признаков — одинаков для всех экспериментов
     lines += [
         "# =============================================================",
         f"# {3 + (1 if cleaning_log else 0)}. ПОДГОТОВКА ПРИЗНАКОВ",
@@ -257,7 +267,7 @@ def generate_script(record: dict, cleaning_log: list, dataset_filename: str) -> 
         "",
     ]
 
-    # --- Модель и обучение ---
+    # Раздел X+1: обучение модели
     lines += [
         "# =============================================================",
         f"# {4 + (1 if cleaning_log else 0)}. ОБУЧЕНИЕ МОДЕЛИ",
@@ -364,7 +374,7 @@ def generate_script(record: dict, cleaning_log: list, dataset_filename: str) -> 
 
     lines += [""]
 
-    # --- Pipeline + финальное обучение ---
+    # Pipeline объединяет препроцессор и финальную модель.
     lines += [
         "pipeline = Pipeline(steps=[",
         "    ('preprocessor', preprocessor),",
@@ -395,7 +405,7 @@ def generate_script(record: dict, cleaning_log: list, dataset_filename: str) -> 
             "y_pred = pipeline.predict(X_test)",
         ]
 
-    # --- Метрики ---
+    # Раздел X+2: оценка
     lines += [
         "",
         "# =============================================================",
@@ -419,7 +429,7 @@ def generate_script(record: dict, cleaning_log: list, dataset_filename: str) -> 
             "print('RMSE:', round(float(np.sqrt(mean_squared_error(y_test, y_pred))), 3))",
         ]
 
-    # --- Сохранение ---
+    # Раздел X+3: сохранение
     lines += [
         "",
         "# =============================================================",
@@ -449,6 +459,7 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Загрузи тренировочный датасет (CSV)", type="csv")
 
     if uploaded_file is not None:
+        # Определяем "новый файл" по имени — не перезагружаем если файл не менялся.
         if ('last_uploaded' not in st.session_state
                 or st.session_state.last_uploaded != uploaded_file.name):
             history = st.session_state.experiment_history
@@ -459,6 +470,7 @@ with st.sidebar:
             st.session_state.raw_df = pd.read_csv(uploaded_file)
             st.session_state.df     = st.session_state.raw_df.copy()
 
+        # Краткая сводка прямо в сайдбаре — чтобы не переключаться во вкладку EDA
         raw = st.session_state.raw_df
         st.divider()
         st.markdown("**📋 Сводка по датасету**")
@@ -473,6 +485,7 @@ with st.sidebar:
         cat_count = len(raw.select_dtypes(exclude='number').columns)
         st.markdown(f"- Числовых / категориальных: **{num_count} / {cat_count}**")
 
+        # Блок активной модели появляется только после обучения
         if st.session_state.is_trained:
             st.divider()
             st.markdown("**🤖 Активная модель**")
@@ -502,6 +515,7 @@ tab_eda, tab_train, tab_history = st.tabs([
 # ВКЛАДКА 1: EDA, ОЧИСТКА, FEATURE ENGINEERING
 # ==========================================
 with tab_eda:
+    # Дельта-счётчик показывает что изменилось относительно исходного датасета.
     delta_rows = len(df) - len(st.session_state.raw_df)
     delta_cols = len(df.columns) - len(st.session_state.raw_df.columns)
     info_parts = [f"**{len(df):,}** строк × **{len(df.columns)}** столбцов"]
@@ -566,6 +580,7 @@ with tab_eda:
             "Множитель IQR (граница = Q1 − k×IQR ... Q3 + k×IQR)",
             min_value=1.0, max_value=4.0, value=1.5, step=0.5, key="iqr_mult",
         )
+        # Живой превью: при движении слайдера сразу видно сколько значений затронет операция
         outlier_preview = []
         for col in num_cols:
             Q1, Q3 = df[col].quantile(0.25), df[col].quantile(0.75)
@@ -574,6 +589,7 @@ with tab_eda:
             if n_out > 0:
                 outlier_preview.append(f"`{col}`: {n_out} шт.")
         st.caption(("Будут сглажены: " + " | ".join(outlier_preview)) if outlier_preview else "Выбросов не обнаружено.")
+        # Multiselect позволяет применить только к выбранным колонкам
         cols_to_clip = st.multiselect("Применить только к столбцам (пусто = все числовые):",
                                       options=num_cols, default=[], key="cols_to_clip")
         if st.button("✂️ Сгладить выбросы"):
@@ -681,12 +697,12 @@ with tab_eda:
         with cf2:
             new_feat_name = st.text_input("Название:", placeholder="FamilySize")
         with cf3:
-            st.write(""); st.write("")
+            st.write(""); st.write("")        # выравниваем кнопку по высоте с полями ввода
             if st.button("➕ Создать"):
                 if formula and new_feat_name:
                     try:
                         new_df = df.copy()
-                        new_df[new_feat_name] = new_df.eval(formula)
+                        new_df[new_feat_name] = new_df.eval(formula)   # вычисляет выражение используя имена колонок как переменные
                         st.session_state.df = new_df
                         if new_feat_name not in st.session_state.custom_features:
                             st.session_state.custom_features.append(new_feat_name)
@@ -713,6 +729,7 @@ with tab_eda:
                     st.rerun()
 
     st.divider()
+    # ── Интерактивные графики ──────────────────────────────────────
     st.subheader("3. Интерактивные графики")
     gc1, gc2, gc3 = st.columns(3)
     with gc1:
@@ -776,18 +793,22 @@ with tab_train:
         cv_folds = st.slider("Фолды", 3, 10, 5, disabled=not use_cv)
 
     if use_cv:
+        # Показываем сколько обучений предстоит — предупреждение о времени
         st.caption(f"⏱️ Всего обучений: {n_trials} × {cv_folds} = {n_trials * cv_folds}")
     if selected_model == "Logistic Regression":
         st.caption("ℹ️ При задаче регрессии автоматически заменится на Ridge.")
 
     if st.button("▶ Запустить ML пайплайн", use_container_width=True):
+        # st.spinner показывает анимацию загрузки пока выполняется блок with
         with st.spinner(f"Обучаю {selected_model}..."):
             engine  = UniversalMLEngine(model_type=selected_model)
             metrics = engine.train_and_evaluate(
                 df, target_col, n_trials=n_trials, use_cv=use_cv, cv_folds=cv_folds)
             explanation = engine.generate_human_explanation()
+            # Сохраняем модель в файл — для тестера, SHAP и скачивания pkl
             engine.save_model("model.pkl")
 
+            # Сохраняем все результаты в session_state
             st.session_state.metrics            = metrics
             st.session_state.explanation        = explanation
             st.session_state.trained_model_name = selected_model
@@ -798,6 +819,7 @@ with tab_train:
             st.session_state.conf_matrix        = engine.conf_matrix
             st.session_state.class_labels       = engine.class_labels
 
+            # Запись в историю экспериментов
             record = {
                 "⏰ Время":       datetime.datetime.now().strftime("%H:%M:%S"),
                 "Модель":        selected_model,
@@ -812,6 +834,7 @@ with tab_train:
             }
             st.session_state.experiment_history.append(record)
 
+    # Блок результатов показывается только если is_trained=True
     if st.session_state.is_trained:
         task_label = "классификация" if st.session_state.task_type == "classification" else "регрессия"
         task_icon  = "🔵" if st.session_state.task_type == "classification" else "📈"
@@ -820,6 +843,7 @@ with tab_train:
             f"{task_icon} Тип задачи: **{task_label}**"
         )
 
+        # Метрики + интерпретация рядом
         m1, m2 = st.columns(2)
         with m1:
             st.subheader("📊 Метрики")
@@ -830,7 +854,7 @@ with tab_train:
             st.subheader("🧠 Интерпретация")
             st.info(st.session_state.explanation)
 
-        # Важность признаков
+        # ── Важность признаков ──────────────────────────────────────────────
         try:
             data_pkl     = joblib.load("model.pkl")
             pipe_inner   = data_pkl["model"]
@@ -856,30 +880,35 @@ with tab_train:
                 fig_fi.update_layout(showlegend=False, height=max(300, 30 * len(fi_df)))
                 st.plotly_chart(fig_fi, use_container_width=True)
         except Exception:
-            pass
+            pass            # Тихо пропускаем: ансамбль, первый запуск до сохранения, и т.д.
 
-        # Confusion Matrix
+        # ── Confusion Matrix ────────────────────────────────────────────────
         if (st.session_state.task_type == "classification"
                 and st.session_state.conf_matrix is not None):
             st.divider()
             st.subheader("📉 Матрица ошибок")
             cm     = np.array(st.session_state.conf_matrix)
             labels = [str(l) for l in st.session_state.class_labels]
+
+            # Нормируем по строкам → каждая ячейка = % от реального класса.
             row_sums = cm.sum(axis=1, keepdims=True)
             cm_norm  = np.where(row_sums > 0, cm / row_sums * 100, 0).round(1)
             fig_cm = px.imshow(cm_norm, x=labels, y=labels,
                                color_continuous_scale="Blues",
                                labels=dict(x="Предсказано", y="Факт", color="%"),
                                title="Confusion Matrix (% от строки)", aspect="auto")
+
+            # Аннотации вручную — двойной формат "42 (84%)"
             for i in range(len(labels)):
                 for j in range(len(labels)):
                     fig_cm.add_annotation(x=labels[j], y=labels[i],
                                           text=f"{cm[i][j]}<br>({cm_norm[i][j]}%)",
                                           showarrow=False, font=dict(size=13, color="black"))
+            # Высота пропорциональна числу классов: 300px для 3 классов, 1000px для 10
             fig_cm.update_layout(height=max(300, 100 * len(labels)))
             st.plotly_chart(fig_cm, use_container_width=True)
 
-        # SHAP Waterfall
+        # ── SHAP Waterfall (загрузка CSV) ───────────────────────────────────
         st.divider()
         st.subheader("🔍 SHAP Waterfall")
         st.write("Загрузи CSV с одной строкой или объясни первую строку датасета.")
@@ -930,6 +959,8 @@ with tab_train:
                                        height=max(400, 40*(top_n+2)),
                                        margin=dict(l=20, r=100, t=60, b=40))
                 st.plotly_chart(fig_shap, use_container_width=True)
+
+                # Текстовое резюме — топ-3 повышающих и снижающих
                 push_up   = [(n, v) for n, v in zip(fn_t[:3], sv_t[:3]) if v > 0]
                 push_down = [(n, v) for n, v in zip(fn_t[:3], sv_t[:3]) if v < 0]
                 parts = []
@@ -942,13 +973,23 @@ with tab_train:
             else:
                 st.warning("⚠️ SHAP недоступен для данной комбинации модели и задачи.")
 
-        # Встроенный тестер
+        # ── Встроенный тестер ──────────────────────────────────────────────
         st.divider()
         st.subheader("🧪 Встроенный тестер модели")
         st.write("Введи значения признаков — получи предсказание прямо здесь.")
         train_df_snap = st.session_state.train_df
 
         def _make_widget(feat, col_widget, key_prefix):
+            """
+            Выбирает подходящий виджет Streamlit для признака по его типу и уникальным значениям.
+
+            Логика выбора:
+            - object/bool/category       → selectbox (строки всегда категориальные)
+            - числовой, nunique <= 15    → selectbox (Pclass: [1,2,3], Survived: [0,1])
+            - числовой int, nunique > 15 → number_input с step=1 (PassengerId, год)
+            - числовой float, nunique>15 → number_input с format="%.4f" (Age, Fare)
+
+            """
             if train_df_snap is not None and feat in train_df_snap.columns:
                 col_data = train_df_snap[feat].dropna()
                 dtype    = col_data.dtype
@@ -1001,7 +1042,7 @@ with tab_train:
             except Exception as e:
                 st.error(f"Ошибка при предсказании: {e}")
 
-        # ── SHAP из тестера ───────────────────────────────────────
+        # ── SHAP из тестера (автоматически после "Предсказать") ────────────────────────
         if predict_btn and st.session_state.is_trained:
             try:
                 data_shap = joblib.load("model.pkl")
@@ -1104,7 +1145,7 @@ with tab_history:
 
         st.divider()
 
-        # График сравнения
+        # ── График сравнения метрик ────────────────────────────────────────
         numeric_cols = hist_df.select_dtypes(include='number').columns.tolist()
         if numeric_cols:
             metric_to_plot = st.selectbox("Метрика для сравнения:", numeric_cols)
@@ -1125,6 +1166,7 @@ with tab_history:
             "от загрузки данных и очистки до обучения модели с точными параметрами."
         )
 
+        # format_func превращает числовой индекс в читаемую строку для selectbox
         exp_labels = [
             f"{i+1}. {r['⏰ Время']} | {r['Модель']} | target={r['Target']} | {r['CV']}"
             for i, r in enumerate(history)
@@ -1134,7 +1176,7 @@ with tab_history:
 
         selected_record = history[selected_idx]
 
-        # Превью выбранного эксперимента
+        # Превью выбранного эксперимента до генерации скрипта
         with st.expander("ℹ️ Параметры выбранного эксперимента", expanded=False):
             info_rows = {k: v for k, v in selected_record.items()
                          if k not in {"best_params", "cleaning_log"}}
@@ -1155,6 +1197,7 @@ with tab_history:
                 cleaning_log=selected_record.get("cleaning_log", []),
                 dataset_filename=dataset_filename,
             )
+            # Формируем имя файла из названия модели и таргета
             model_safe = selected_record["Модель"].replace(" ", "_").replace("(", "").replace(")", "")
             fname = f"ml_solution_{model_safe}_{selected_record['Target']}.py"
             st.download_button(
@@ -1164,7 +1207,7 @@ with tab_history:
                 mime="text/x-python",
                 use_container_width=True,
             )
-            # Превью скрипта
+            # Превью прямо в интерфейсе — можно прочитать до скачивания
             st.divider()
             st.markdown("**Превью сгенерированного скрипта:**")
             st.code(script_code, language="python")

@@ -1,6 +1,5 @@
 import os
 
-
 # Только зависимости, нужные для продакшен-инференса.
 # Streamlit, Plotly, Optuna, SHAP и прочие dev-инструменты сюда не попадают.
 # Это уменьшает Docker-образ с ~2 ГБ до ~300 МБ.
@@ -11,7 +10,6 @@ pandas==2.2.0
 joblib==1.3.2
 numpy>=1.26.0
 """
-
 
 def generate_deployment_files():
     os.makedirs("deploy", exist_ok=True)
