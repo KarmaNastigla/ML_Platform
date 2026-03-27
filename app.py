@@ -1,11 +1,20 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px       # высокоуровневые графики: гистограммы, scatter, heatmap
-import plotly.graph_objects as go # низкоуровневые графики: Waterfall (SHAP)
-import joblib                     # загрузка сохранённой модели из model.pkl
+import plotly.express as px        # высокоуровневые графики: гистограммы, scatter, heatmap
+import plotly.graph_objects as go  # низкоуровневые графики: Waterfall (SHAP)
+import joblib                      # загрузка сохранённой модели из model.pkl
 import datetime
 from ml_engine import UniversalMLEngine
+from nn_engine import SklearnMLPEngine, PyTorchMLPEngine
+
+# Флаг: доступен ли TabNet (требует pytorch-tabnet)
+try:
+    from nn_engine import TabNetEngine
+
+    TABNET_AVAILABLE = True
+except Exception:
+    TABNET_AVAILABLE = False
 
 st.set_page_config(page_title="Universal ML Platform", layout="wide")
 
@@ -505,9 +514,10 @@ df = st.session_state.df
 dataset_filename = st.session_state.get('last_uploaded', 'dataset.csv')
 st.title("🚀 Universal ML Platform")
 
-tab_eda, tab_train, tab_history = st.tabs([
+tab_eda, tab_train, tab_nn, tab_history = st.tabs([
     "📊 Анализ и Очистка",
     "⚙️ Обучение и Тестер",
+    "🧠 Нейросети (ИНС)",
     "📜 История экспериментов",
 ])
 
@@ -1117,7 +1127,233 @@ with tab_train:
             pass
 
 # ==========================================
-# ВКЛАДКА 3: ИСТОРИЯ ЭКСПЕРИМЕНТОВ
+# ВКЛАДКА 3: НЕЙРОСЕТИ
+# ==========================================
+with tab_nn:
+    st.write(
+        "Обучи нейронную сеть на тех же данных и сравни с классическими алгоритмами. "
+        "Все модели работают с табличными данными."
+    )
+
+    # Выбор архитектуры
+    nn_col1, nn_col2 = st.columns([1, 2])
+    with nn_col1:
+        nn_model_type = st.selectbox(
+            "Архитектура нейросети:",
+            options=(
+                ["sklearn MLP", "PyTorch MLP", "TabNet"]
+                if TABNET_AVAILABLE
+                else ["sklearn MLP", "PyTorch MLP"]
+            ),
+            help=(
+                "sklearn MLP — полносвязная сеть без новых зависимостей\n"
+                "PyTorch MLP — кастомная сеть с BatchNorm и Dropout\n"
+                "TabNet — трансформер для таблиц (требует pytorch-tabnet)"
+            ),
+        )
+    with nn_col2:
+        nn_target_col = st.selectbox("Целевая колонка:", df.columns, key="nn_target")
+
+    # Параметры архитектуры
+    st.divider()
+    if nn_model_type == "sklearn MLP":
+        st.markdown("**Параметры sklearn MLP**")
+        sc1, sc2, sc3 = st.columns(3)
+        layer1 = sc1.number_input("Нейроны в слое 1", 16, 512, 128, step=16)
+        layer2 = sc2.number_input("Нейроны в слое 2", 0, 512, 64, step=16,
+                                  help="0 = только один скрытый слой")
+        max_iter = sc3.number_input("Макс. итераций", 50, 1000, 300, step=50)
+        hidden = (layer1,) if layer2 == 0 else (layer1, layer2)
+        st.caption(
+            f"Архитектура: вход → {layer1}"
+            + (f" → {layer2}" if layer2 > 0 else "") +
+            " → выход | Early stopping включён"
+        )
+
+    elif nn_model_type == "PyTorch MLP":
+        st.markdown("**Параметры PyTorch MLP**")
+        pc1, pc2, pc3, pc4 = st.columns(4)
+        pt_l1 = pc1.number_input("Слой 1", 32, 512, 256, step=32)
+        pt_l2 = pc2.number_input("Слой 2", 0, 512, 128, step=32)
+        pt_l3 = pc3.number_input("Слой 3", 0, 512, 64, step=32,
+                                 help="0 = пропустить слой")
+        pt_dropout = pc4.slider("Dropout", 0.0, 0.7, 0.3, step=0.1,
+                                help="Доля нейронов случайно отключаемых при обучении")
+        pt_epochs = st.slider("Макс. эпох", 20, 300, 100, step=10)
+        hidden = tuple(d for d in [pt_l1, pt_l2, pt_l3] if d > 0)
+        st.caption(
+            f"Архитектура: вход → {' → '.join(str(d) for d in hidden)} → выход | "
+            f"BatchNorm + Dropout({pt_dropout}) | Early stopping"
+        )
+
+    elif nn_model_type == "TabNet":
+        st.markdown("**Параметры TabNet**")
+        tb1, tb2, tb3 = st.columns(3)
+        tb_steps = tb1.slider("Шаги внимания (n_steps)", 2, 6, 3,
+                              help="Сколько раз сеть выбирает признаки последовательно")
+        tb_nd = tb2.slider("Размер n_d / n_a", 8, 64, 16, step=8,
+                           help="Размерность пространств решений и внимания")
+        tb_epochs = tb3.slider("Макс. эпох", 20, 300, 100, step=10)
+        st.caption(
+            f"TabNet: {tb_steps} шагов × n_d={tb_nd} | "
+            "Интерпретируемость через механизм внимания"
+        )
+
+    if st.button("🚀 Обучить нейросеть", use_container_width=True):
+        with st.spinner(f"Обучаю {nn_model_type}..."):
+            try:
+                if nn_model_type == "sklearn MLP":
+                    engine_nn = SklearnMLPEngine(
+                        hidden_layers=hidden, max_iter=int(max_iter))
+                elif nn_model_type == "PyTorch MLP":
+                    engine_nn = PyTorchMLPEngine(
+                        hidden_dims=hidden, dropout=pt_dropout, max_epochs=int(pt_epochs))
+                elif nn_model_type == "TabNet":
+                    engine_nn = TabNetEngine(
+                        n_steps=int(tb_steps), n_d=int(tb_nd), n_a=int(tb_nd),
+                        max_epochs=int(tb_epochs))
+
+                nn_metrics = engine_nn.train_and_evaluate(df, nn_target_col)
+                engine_nn.save_model("model_nn.pkl")
+
+                st.session_state["nn_metrics"] = nn_metrics
+                st.session_state["nn_explanation"] = engine_nn.generate_human_explanation()
+                st.session_state["nn_model_type"] = nn_model_type
+                st.session_state["nn_task_type"] = engine_nn.task_type
+                st.session_state["nn_conf_matrix"] = engine_nn.conf_matrix
+                st.session_state["nn_class_labels"] = engine_nn.class_labels
+                st.session_state["nn_fi"] = (
+                    engine_nn.feature_importances_
+                    if hasattr(engine_nn, "feature_importances_") else None
+                )
+
+                # Добавляем в общую историю для сравнения с классическим ML
+                nn_record = {
+                    "⏰ Время": datetime.datetime.now().strftime("%H:%M:%S"),
+                    "Модель": f"ИНС: {nn_model_type}",
+                    "Задача": engine_nn.task_type,
+                    "Target": nn_target_col,
+                    "CV": "hold-out",
+                    "Optuna trials": 0,
+                    "best_params": dict(engine_nn.best_params),
+                    "cleaning_log": [],
+                    **nn_metrics,
+                }
+                st.session_state.experiment_history.append(nn_record)
+
+            except Exception as e:
+                st.error(f"Ошибка обучения: {e}")
+
+    # Результаты нейросети
+    if st.session_state.get("nn_metrics"):
+        nn_task = st.session_state["nn_task_type"]
+        nn_icon = "🔵" if nn_task == "classification" else "📈"
+        nn_label = "классификация" if nn_task == "classification" else "регрессия"
+        st.success(
+            f"✅ **{st.session_state['nn_model_type']}** обучена! "
+            f"{nn_icon} {nn_label}"
+        )
+
+        nn1, nn2 = st.columns(2)
+        with nn1:
+            st.subheader("📊 Метрики ИНС")
+            nm_cols = st.columns(min(len(st.session_state["nn_metrics"]), 3))
+            for i, (k, v) in enumerate(st.session_state["nn_metrics"].items()):
+                nm_cols[i % 3].metric(k, v)
+        with nn2:
+            st.subheader("🧠 Архитектура")
+            st.info(st.session_state["nn_explanation"])
+
+        # Сравнение с классическим ML (если обе модели обучены)
+        if st.session_state.is_trained:
+            st.divider()
+            st.subheader("⚖️ Сравнение: ИНС vs Классический ML")
+            # Берём только общие метрики
+            classic_m = st.session_state.metrics
+            nn_m = st.session_state["nn_metrics"]
+            common_keys = [k for k in classic_m if k in nn_m]
+            if common_keys:
+                cmp_df = pd.DataFrame({
+                    "Метрика": common_keys,
+                    st.session_state.trained_model_name: [classic_m[k] for k in common_keys],
+                    st.session_state["nn_model_type"]: [nn_m[k] for k in common_keys],
+                })
+                cmp_melted = cmp_df.melt(
+                    id_vars="Метрика", var_name="Модель", value_name="Значение")
+                fig_cmp = px.bar(
+                    cmp_melted, x="Метрика", y="Значение", color="Модель",
+                    barmode="group",
+                    title=f"{st.session_state.trained_model_name} vs {st.session_state['nn_model_type']}",
+                    text_auto=".3f",
+                    color_discrete_map={
+                        st.session_state.trained_model_name: "#378add",
+                        st.session_state["nn_model_type"]: "#e74c3c",
+                    },
+                )
+                st.plotly_chart(fig_cmp, use_container_width=True)
+
+                # Кто победил
+                first_key = common_keys[0]
+                classic_v = classic_m[first_key]
+                nn_v = nn_m[first_key]
+                if nn_task == "regression" and first_key == "R²":
+                    winner = (st.session_state["nn_model_type"]
+                              if nn_v > classic_v
+                              else st.session_state.trained_model_name)
+                else:
+                    winner = (st.session_state["nn_model_type"]
+                              if nn_v > classic_v
+                              else st.session_state.trained_model_name)
+                margin = abs(nn_v - classic_v)
+                if margin < 0.005:
+                    st.info(f"🤝 Результаты практически одинаковы (Δ={margin:.3f}).")
+                elif winner == st.session_state["nn_model_type"]:
+                    st.success(f"🏆 Нейросеть выигрывает по {first_key}: {nn_v} vs {classic_v}")
+                else:
+                    st.warning(f"⚡ Классический ML выигрывает по {first_key}: {classic_v} vs {nn_v}")
+        else:
+            st.info("💡 Обучи классическую модель во вкладке 'Обучение и Тестер' чтобы сравнить результаты.")
+
+        # Confusion Matrix для ИНС
+        if (nn_task == "classification" and st.session_state.get("nn_conf_matrix") is not None):
+            st.divider()
+            st.subheader("📉 Confusion Matrix (нейросеть)")
+            cm = np.array(st.session_state["nn_conf_matrix"])
+            labels = [str(l) for l in st.session_state["nn_class_labels"]]
+            row_sums = cm.sum(axis=1, keepdims=True)
+            cm_norm = np.where(row_sums > 0, cm / row_sums * 100, 0).round(1)
+            fig_nn_cm = px.imshow(cm_norm, x=labels, y=labels,
+                                  color_continuous_scale="Reds",
+                                  labels=dict(x="Предсказано", y="Факт", color="%"),
+                                  title="Confusion Matrix ИНС", aspect="auto")
+            for i in range(len(labels)):
+                for j in range(len(labels)):
+                    fig_nn_cm.add_annotation(
+                        x=labels[j], y=labels[i],
+                        text=f"{cm[i][j]}<br>({cm_norm[i][j]}%)",
+                        showarrow=False, font=dict(size=13, color="black"))
+            fig_nn_cm.update_layout(height=max(300, 100 * len(labels)))
+            st.plotly_chart(fig_nn_cm, use_container_width=True)
+
+        # TabNet feature importances
+        nn_fi = st.session_state.get("nn_fi")
+        if nn_fi is not None and len(nn_fi) > 0:
+            st.divider()
+            st.subheader("📌 Важность признаков (TabNet attention)")
+            fi_names = df.drop(columns=[nn_target_col]).columns.tolist()
+            if len(fi_names) == len(nn_fi):
+                fi_df = (pd.DataFrame({"Признак": fi_names, "Важность": nn_fi})
+                         .sort_values("Важность", ascending=True).tail(15))
+                fig_fi_nn = px.bar(fi_df, x="Важность", y="Признак", orientation="h",
+                                   title="Важность признаков по механизму внимания TabNet",
+                                   color="Важность", color_continuous_scale="Reds",
+                                   text_auto=".3f")
+                fig_fi_nn.update_layout(showlegend=False, height=max(300, 30 * len(fi_df)))
+                st.plotly_chart(fig_fi_nn, use_container_width=True)
+                st.caption("Важность = среднее внимание по всем шагам sequential attention.")
+
+# ==========================================
+# ВКЛАДКА 4: ИСТОРИЯ ЭКСПЕРИМЕНТОВ
 # ==========================================
 with tab_history:
     st.subheader("📜 История экспериментов")
