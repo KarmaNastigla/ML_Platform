@@ -1,16 +1,11 @@
 """
 nn_engine.py — Движок нейронных сетей для Universal ML Platform.
 
-Поддерживает три архитектуры для ТАБЛИЧНЫХ данных:
-  1. MLPClassifier / MLPRegressor (sklearn)        — полносвязная сеть, нулевые зависимости
-  2. TabNet (pytorch-tabnet)                        — трансформер для таблиц
-  3. PyTorchMLP (torch)                             — простая кастомная нейросеть
-
-Все модели:
-  - Принимают тот же DataFrame что и UniversalMLEngine
-  - Возвращают те же ключи метрик (Accuracy / R² и т.д.)
-  - Имеют generate_human_explanation() для интерпретации
-  - Поддерживают save_model() в тот же формат pkl
+Исправления:
+  - PyTorchMLPEngine: добавлена инициализация history_train_loss / history_val_loss
+    до цикла обучения (NameError был гарантирован при первом же .append())
+  - SklearnMLPEngine: добавлен атрибут self.train_history через loss_curve_ / validation_scores_
+    из sklearn MLP — теперь показывается график лосса и для sklearn MLP
 """
 
 import pandas as pd
@@ -31,18 +26,12 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
-# ──────────────────────────────────────────────────────────────────────────────
-# ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: препроцессор (одинаков для всех нейросетей)
-# ──────────────────────────────────────────────────────────────────────────────
-def _build_preprocessor(num_cols, cat_cols):
-    """
-    Строит ColumnTransformer аналогичный ml_engine.py.
-    Нейросети особенно чувствительны к масштабу — StandardScaler обязателен
 
-    """
+def _build_preprocessor(num_cols, cat_cols):
+    """Строит ColumnTransformer — одинаков для всех нейросетей."""
     numeric_tf = Pipeline(steps=[
         ('imputer', SimpleImputer(strategy='median')),
-        ('scaler', StandardScaler()),          # нормализация критична для нейросетей
+        ('scaler', StandardScaler()),
     ])
     categorical_tf = Pipeline(steps=[
         ('imputer', SimpleImputer(strategy='most_frequent')),
@@ -53,8 +42,8 @@ def _build_preprocessor(num_cols, cat_cols):
         ('cat', categorical_tf, cat_cols),
     ])
 
+
 def detect_task_type(y: pd.Series) -> str:
-    """Та же логика что в UniversalMLEngine — копируем для независимости модуля"""
     if y.dtype in ['float64', 'float32']:
         return 'regression'
     if y.nunique() > 20:
@@ -65,12 +54,10 @@ def detect_task_type(y: pd.Series) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. sklearn MLP
 # ──────────────────────────────────────────────────────────────────────────────
+
 class SklearnMLPEngine:
-    """
-    Многослойный персептрон через sklearn.
-    Преимущества: нет новых зависимостей, работает везде, быстро.
-    Ограничения: нет GPU, нет батч-обучения для больших данных.
-    """
+    """Многослойный персептрон через sklearn. Нет новых зависимостей."""
+
     def __init__(self, hidden_layers=(128, 64), max_iter=300, learning_rate_init=0.001):
         self.hidden_layers = hidden_layers
         self.max_iter = max_iter
@@ -80,6 +67,7 @@ class SklearnMLPEngine:
         self.features = []
         self.class_labels = None
         self.conf_matrix = None
+        self.train_history = None   # заполняется после обучения
         self.best_params = {
             'hidden_layers': hidden_layers,
             'max_iter': max_iter,
@@ -97,15 +85,16 @@ class SklearnMLPEngine:
         cat_cols = X.select_dtypes(include=['object', 'category', 'bool']).columns.tolist()
         preprocessor = _build_preprocessor(num_cols, cat_cols)
 
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42)
 
         if self.task_type == 'classification':
             model = MLPClassifier(
                 hidden_layer_sizes=self.hidden_layers,
                 max_iter=self.max_iter,
                 learning_rate_init=self.learning_rate_init,
-                early_stopping=True,  # останавливаем при отсутствии прогресса
-                validation_fraction=0.1,  # 10% train идёт на валидацию внутри
+                early_stopping=True,
+                validation_fraction=0.1,
                 random_state=42,
                 verbose=False,
             )
@@ -124,6 +113,27 @@ class SklearnMLPEngine:
         self.pipeline.fit(X_train, y_train)
         preds = self.pipeline.predict(X_test)
 
+        # ── Извлекаем историю обучения из sklearn MLP ──────────────────────
+        # loss_curve_     — лосс на train по итерациям (всегда доступен)
+        # validation_scores_ — accuracy/r2 на val (доступен при early_stopping=True)
+        inner = self.pipeline.named_steps['model']
+        train_loss = list(getattr(inner, 'loss_curve_', []))
+        val_scores = list(getattr(inner, 'validation_scores_', []))
+
+        # validation_scores_ — это accuracy/r2 (выше лучше), переводим в «лосс» для графика
+        if val_scores:
+            val_loss = [round(1.0 - s, 5) for s in val_scores]
+        else:
+            # Если val недоступна — дублируем train (редкий случай)
+            val_loss = train_loss[:]
+
+        n_iter = getattr(inner, 'n_iter_', len(train_loss))
+        self.train_history = {
+            'train_loss': [round(float(v), 5) for v in train_loss],
+            'val_loss':   [round(float(v), 5) for v in val_loss],
+            'n_iter':     n_iter,
+        }
+
         return self._compute_metrics(y_test, preds, y)
 
     def _compute_metrics(self, y_test, preds, y_full):
@@ -131,16 +141,16 @@ class SklearnMLPEngine:
             self.class_labels = sorted(y_full.unique().tolist())
             self.conf_matrix = confusion_matrix(y_test, preds, labels=self.class_labels)
             return {
-                'Accuracy': round(accuracy_score(y_test, preds), 3),
+                'Accuracy':  round(accuracy_score(y_test, preds), 3),
                 'Precision': round(precision_score(y_test, preds, average='macro', zero_division=0), 3),
-                'Recall': round(recall_score(y_test, preds, average='macro', zero_division=0), 3),
+                'Recall':    round(recall_score(y_test, preds, average='macro', zero_division=0), 3),
             }
         else:
             self.class_labels = None
             self.conf_matrix = None
             return {
-                'R²': round(r2_score(y_test, preds), 3),
-                'MAE': round(mean_absolute_error(y_test, preds), 3),
+                'R²':   round(r2_score(y_test, preds), 3),
+                'MAE':  round(mean_absolute_error(y_test, preds), 3),
                 'RMSE': round(float(np.sqrt(mean_squared_error(y_test, preds))), 3),
             }
 
@@ -150,50 +160,48 @@ class SklearnMLPEngine:
                           + [str(s) for s in self.hidden_layers[1:]])
         n_iter = getattr(model, 'n_iter_', self.max_iter)
         tl = "классификации" if self.task_type == 'classification' else "регрессии"
+        stopped = n_iter < self.max_iter
+        stop_note = f"Early stopping на итерации **{n_iter}**." if stopped else f"Обучение завершено за **{n_iter}** итераций."
         return (
             f"Sklearn **MLP** (задача {tl}). "
             f"Архитектура: вход → **{arch}** → выход. "
-            f"Обучение остановлено на итерации **{n_iter}** (early stopping). "
+            f"{stop_note} "
             f"Активация: ReLU. Оптимизатор: Adam (lr={self.learning_rate_init})."
         )
 
     def save_model(self, path="model.pkl"):
         joblib.dump({
-            "model": self.pipeline, "features": self.features,
-            "task_type": self.task_type, "class_labels": self.class_labels,
-            "nn_type": "sklearn_mlp",
+            "model":        self.pipeline,
+            "features":     self.features,
+            "task_type":    self.task_type,
+            "class_labels": self.class_labels,
+            "nn_type":      "sklearn_mlp",
         }, path)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 2. TabNet (pytorch-tabnet)
 # ──────────────────────────────────────────────────────────────────────────────
+
 class TabNetEngine:
     """
     TabNet — трансформер для табличных данных (Arik & Pfister, Google, 2019).
-
-    Ключевые идеи:
-    - Sequential attention: на каждом шаге сеть выбирает какие признаки использовать
-    - Feature importances из внимания — встроенная интерпретируемость
-    - Обычно сопоставим с Gradient Boosting или лучше на больших датасетах
-
     Требует: pip install pytorch-tabnet
-
     """
+
     def __init__(self, n_steps=3, n_d=16, n_a=16, max_epochs=100, patience=15):
-        # n_steps: количество шагов последовательного внимания
-        # n_d, n_a: размерности пространств решений и внимания
         self.n_steps = n_steps
         self.n_d = n_d
         self.n_a = n_a
         self.max_epochs = max_epochs
-        self.patience = patience       # early stopping: остановка если нет улучшения N эпох
+        self.patience = patience
         self.model = None
         self.task_type = None
         self.features = []
         self.class_labels = None
         self.conf_matrix = None
         self.feature_importances_ = None
+        self.train_history = None
         self.best_params = {
             'n_steps': n_steps, 'n_d': n_d, 'n_a': n_a,
             'max_epochs': max_epochs, 'patience': patience,
@@ -201,11 +209,19 @@ class TabNetEngine:
 
     def train_and_evaluate(self, df: pd.DataFrame, target_col: str):
         try:
+            import torch
+            _ = torch.tensor([1.0])
+        except Exception as e:
+            raise RuntimeError(
+                f"PyTorch недоступен (DLL ошибка): {e}\n"
+                "Исправление:\n"
+                "  pip uninstall torch -y\n"
+                "  pip install torch --index-url https://download.pytorch.org/whl/cpu"
+            )
+        try:
             from pytorch_tabnet.tab_model import TabNetClassifier, TabNetRegressor
         except ImportError:
-            raise ImportError(
-                "pytorch-tabnet не установлен. Запусти: pip install pytorch-tabnet"
-            )
+            raise ImportError("pytorch-tabnet не установлен. Запусти: pip install pytorch-tabnet")
 
         df = df.dropna(subset=[target_col])
         X = df.drop(columns=[target_col])
@@ -215,27 +231,21 @@ class TabNetEngine:
 
         num_cols = X.select_dtypes(include=['int64', 'float64']).columns.tolist()
         cat_cols = X.select_dtypes(include=['object', 'category', 'bool']).columns.tolist()
-
-        # Препроцессинг вручную — TabNet не принимает Pipeline sklearn
         preprocessor = _build_preprocessor(num_cols, cat_cols)
 
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        X_val, X_test2, y_val, y_test2 = train_test_split(X_test, y_test, test_size=0.5, random_state=42)
+        X_val, X_test2, y_val, y_test2   = train_test_split(X_test, y_test, test_size=0.5, random_state=42)
 
-        # Трансформируем данные в numpy-массивы — TabNet не принимает DataFrame
         X_train_t = preprocessor.fit_transform(X_train).astype(np.float32)
-        X_val_t = preprocessor.transform(X_val).astype(np.float32)
-        X_test_t = preprocessor.transform(X_test2).astype(np.float32)
-
-        # Сохраняем препроцессор для инференса
+        X_val_t   = preprocessor.transform(X_val).astype(np.float32)
+        X_test_t  = preprocessor.transform(X_test2).astype(np.float32)
         self._preprocessor = preprocessor
 
         if self.task_type == 'classification':
-            # LabelEncoder: TabNet требует числовые метки от 0 до N-1
             self._le = LabelEncoder()
             y_train_enc = self._le.fit_transform(y_train)
-            y_val_enc = self._le.transform(y_val)
-            y_test_enc = self._le.transform(y_test2)
+            y_val_enc   = self._le.transform(y_val)
+            y_test_enc  = self._le.transform(y_test2)
             self.class_labels = sorted(y.unique().tolist())
 
             self.model = TabNetClassifier(
@@ -244,17 +254,13 @@ class TabNetEngine:
                 optimizer_params={'lr': 2e-3},
                 scheduler_params={'gamma': 0.95, 'step_size': 20},
                 scheduler_fn=__import__('torch').optim.lr_scheduler.StepLR,
-                verbose=0,
-                seed=42,
+                verbose=0, seed=42,
             )
             self.model.fit(
                 X_train_t, y_train_enc,
                 eval_set=[(X_val_t, y_val_enc)],
-                eval_name=['val'],
-                eval_metric=['accuracy'],
-                max_epochs=self.max_epochs,
-                patience=self.patience,
-                batch_size=256,
+                eval_name=['val'], eval_metric=['accuracy'],
+                max_epochs=self.max_epochs, patience=self.patience, batch_size=256,
             )
             preds_enc = self.model.predict(X_test_t)
             preds = self._le.inverse_transform(preds_enc)
@@ -263,29 +269,43 @@ class TabNetEngine:
         else:
             self._le = None
             y_train_np = y_train.values.reshape(-1, 1).astype(np.float32)
-            y_val_np = y_val.values.reshape(-1, 1).astype(np.float32)
+            y_val_np   = y_val.values.reshape(-1, 1).astype(np.float32)
 
             self.model = TabNetRegressor(
                 n_steps=self.n_steps, n_d=self.n_d, n_a=self.n_a,
                 optimizer_fn=__import__('torch').optim.Adam,
                 optimizer_params={'lr': 2e-3},
-                verbose=0,
-                seed=42,
+                verbose=0, seed=42,
             )
             self.model.fit(
                 X_train_t, y_train_np,
                 eval_set=[(X_val_t, y_val_np)],
-                eval_name=['val'],
-                eval_metric=['mse'],
-                max_epochs=self.max_epochs,
-                patience=self.patience,
-                batch_size=256,
+                eval_name=['val'], eval_metric=['mse'],
+                max_epochs=self.max_epochs, patience=self.patience, batch_size=256,
             )
             preds = self.model.predict(X_test_t).ravel()
             y_test_orig = y_test2
 
-            # Feature importances из механизма внимания TabNet
         self.feature_importances_ = self.model.feature_importances_
+
+        # История обучения из TabNet (история лосса по эпохам)
+        try:
+            hist = self.model.history
+            train_l = [round(float(v), 5) for v in hist.get('loss', [])]
+            val_key  = 'val_accuracy' if self.task_type == 'classification' else 'val_mse'
+            val_raw  = hist.get(val_key, [])
+            # accuracy → инвертируем в лосс, mse оставляем как есть
+            if self.task_type == 'classification':
+                val_l = [round(1.0 - float(v), 5) for v in val_raw]
+            else:
+                val_l = [round(float(v), 5) for v in val_raw]
+            self.train_history = {
+                'train_loss': train_l,
+                'val_loss':   val_l,
+                'n_iter':     len(train_l),
+            }
+        except Exception:
+            self.train_history = None
 
         return self._compute_metrics(y_test_orig, preds, y)
 
@@ -293,15 +313,15 @@ class TabNetEngine:
         if self.task_type == 'classification':
             self.conf_matrix = confusion_matrix(y_test, preds, labels=self.class_labels)
             return {
-                'Accuracy': round(accuracy_score(y_test, preds), 3),
+                'Accuracy':  round(accuracy_score(y_test, preds), 3),
                 'Precision': round(precision_score(y_test, preds, average='macro', zero_division=0), 3),
-                'Recall': round(recall_score(y_test, preds, average='macro', zero_division=0), 3),
+                'Recall':    round(recall_score(y_test, preds, average='macro', zero_division=0), 3),
             }
         else:
             self.conf_matrix = None
             return {
-                'R²': round(r2_score(y_test, preds), 3),
-                'MAE': round(mean_absolute_error(y_test, preds), 3),
+                'R²':   round(r2_score(y_test, preds), 3),
+                'MAE':  round(mean_absolute_error(y_test, preds), 3),
                 'RMSE': round(float(np.sqrt(mean_squared_error(y_test, preds))), 3),
             }
 
@@ -322,15 +342,14 @@ class TabNetEngine:
         )
 
     def save_model(self, path="model.pkl"):
-        # TabNet сохраняется через joblib вместе с препроцессором
         joblib.dump({
-            "tabnet_model": self.model,
-            "preprocessor": self._preprocessor,
+            "tabnet_model":  self.model,
+            "preprocessor":  self._preprocessor,
             "label_encoder": self._le,
-            "features": self.features,
-            "task_type": self.task_type,
-            "class_labels": self.class_labels,
-            "nn_type": "tabnet",
+            "features":      self.features,
+            "task_type":     self.task_type,
+            "class_labels":  self.class_labels,
+            "nn_type":       "tabnet",
         }, path)
 
 
@@ -341,17 +360,7 @@ class TabNetEngine:
 class PyTorchMLPEngine:
     """
     Кастомная полносвязная нейросеть на PyTorch.
-
     Архитектура: Input → [Linear → BatchNorm → ReLU → Dropout] × N → Output
-
-    Преимущества перед sklearn MLP:
-    - BatchNorm: стабилизирует обучение, позволяет использовать большой lr
-    - Dropout: регуляризация, снижает переобучение
-    - Гибкая архитектура через список hidden_dims
-    - GPU-поддержка (если доступно)
-
-    Требует: pip install torch
-
     """
 
     def __init__(self, hidden_dims=(256, 128, 64), dropout=0.3,
@@ -369,30 +378,24 @@ class PyTorchMLPEngine:
         self.features = []
         self.class_labels = None
         self.conf_matrix = None
+        self.train_history = None
         self.best_params = {
             'hidden_dims': hidden_dims, 'dropout': dropout,
             'lr': lr, 'max_epochs': max_epochs,
         }
 
     def _build_model(self, input_dim, output_dim):
-        """
-        Строит PyTorch-модель
-        BatchNorm1d после Linear — нормализует активации, ускоряет сходимость
-        Dropout — случайно обнуляет p% нейронов при обучении, снижает переобучение
-
-        """
         try:
-            import torch
             import torch.nn as nn
-        except ImportError:
-            raise ImportError("PyTorch не установлен. Запусти: pip install torch")
+        except (ImportError, OSError) as e:
+            raise RuntimeError(f"PyTorch недоступен: {e}")
 
         layers = []
         prev_dim = input_dim
         for dim in self.hidden_dims:
             layers += [
                 nn.Linear(prev_dim, dim),
-                nn.BatchNorm1d(dim),  # нормализует каждый батч
+                nn.BatchNorm1d(dim),
                 nn.ReLU(),
                 nn.Dropout(self.dropout),
             ]
@@ -403,12 +406,23 @@ class PyTorchMLPEngine:
     def train_and_evaluate(self, df: pd.DataFrame, target_col: str):
         try:
             import torch
+            _ = torch.tensor([1.0])   # реальная проверка загрузки DLL
             import torch.nn as nn
             from torch.utils.data import DataLoader, TensorDataset
+        except OSError as e:
+            raise RuntimeError(
+                f"PyTorch DLL ошибка (c10.dll): {e}\n"
+                "Причина: установлена CUDA-версия torch без GPU/драйверов.\n"
+                "Исправление:\n"
+                "  pip uninstall torch -y\n"
+                "  pip install torch --index-url https://download.pytorch.org/whl/cpu"
+            )
         except ImportError:
-            raise ImportError("PyTorch не установлен. Запусти: pip install torch")
+            raise ImportError(
+                "PyTorch не установлен. Запусти:\n"
+                "  pip install torch --index-url https://download.pytorch.org/whl/cpu"
+            )
 
-        # Выбираем устройство: GPU если доступно, иначе CPU
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         df = df.dropna(subset=[target_col])
@@ -422,104 +436,102 @@ class PyTorchMLPEngine:
         self._preprocessor = _build_preprocessor(num_cols, cat_cols)
 
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        X_val, X_test2, y_val, y_test2 = train_test_split(X_test, y_test, test_size=0.5, random_state=42)
+        X_val, X_test2, y_val, y_test2   = train_test_split(X_test, y_test, test_size=0.5, random_state=42)
 
         X_train_t = self._preprocessor.fit_transform(X_train).astype(np.float32)
-        X_val_t = self._preprocessor.transform(X_val).astype(np.float32)
-        X_test_t = self._preprocessor.transform(X_test2).astype(np.float32)
-
+        X_val_t   = self._preprocessor.transform(X_val).astype(np.float32)
+        X_test_t  = self._preprocessor.transform(X_test2).astype(np.float32)
         input_dim = X_train_t.shape[1]
 
         if self.task_type == 'classification':
             self._le = LabelEncoder()
             y_train_enc = self._le.fit_transform(y_train).astype(np.int64)
-            y_val_enc = self._le.transform(y_val).astype(np.int64)
-            y_test_enc = self._le.transform(y_test2).astype(np.int64)
+            y_val_enc   = self._le.transform(y_val).astype(np.int64)
+            y_test_enc  = self._le.transform(y_test2).astype(np.int64)
             self.class_labels = sorted(y.unique().tolist())
             n_classes = len(self.class_labels)
 
             model = self._build_model(input_dim, n_classes).to(device)
-            # CrossEntropyLoss = LogSoftmax + NLLLoss — стандарт для классификации
             criterion = nn.CrossEntropyLoss()
-
-            # Тензоры для DataLoader
             train_ds = TensorDataset(
                 torch.tensor(X_train_t).to(device),
                 torch.tensor(y_train_enc).to(device)
             )
-            val_X = torch.tensor(X_val_t).to(device)
-            val_y = torch.tensor(y_val_enc).to(device)
+            val_X  = torch.tensor(X_val_t).to(device)
+            val_y  = torch.tensor(y_val_enc).to(device)
             test_X = torch.tensor(X_test_t).to(device)
-
         else:
             self._le = None
             y_train_np = y_train.values.astype(np.float32).reshape(-1, 1)
-            y_val_np = y_val.values.astype(np.float32).reshape(-1, 1)
-            y_test_np = y_test2.values.astype(np.float32).reshape(-1, 1)
+            y_val_np   = y_val.values.astype(np.float32).reshape(-1, 1)
 
             model = self._build_model(input_dim, 1).to(device)
-            criterion = nn.MSELoss()  # для регрессии минимизируем MSE
-
+            criterion = nn.MSELoss()
             train_ds = TensorDataset(
                 torch.tensor(X_train_t).to(device),
                 torch.tensor(y_train_np).to(device)
             )
-            val_X = torch.tensor(X_val_t).to(device)
-            val_y = torch.tensor(y_val_np).to(device)
+            val_X  = torch.tensor(X_val_t).to(device)
+            val_y  = torch.tensor(y_val_np).to(device)
             test_X = torch.tensor(X_test_t).to(device)
 
         self._model = model
         loader = DataLoader(train_ds, batch_size=self.batch_size, shuffle=True)
-        # Adam с weight_decay = L2-регуляризация на веса
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lr, weight_decay=1e-4)
-        # ReduceLROnPlateau: уменьшает lr вдвое если val_loss не улучшается 5 эпох
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, patience=5, factor=0.5
-        )
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
 
         best_val_loss = float('inf')
         patience_counter = 0
         best_state = None
 
+        # ── ИСПРАВЛЕНИЕ: инициализируем списки ДО цикла ──────────────────
+        history_train_loss: list = []
+        history_val_loss:   list = []
+        # ─────────────────────────────────────────────────────────────────
+
         for epoch in range(self.max_epochs):
-            # ── Фаза обучения ──
             model.train()
             for X_batch, y_batch in loader:
                 optimizer.zero_grad()
-                out = model(X_batch)
+                out  = model(X_batch)
                 loss = criterion(out, y_batch)
-                loss.backward()  # обратное распространение ошибки
-                optimizer.step()  # шаг оптимизатора
+                loss.backward()
+                optimizer.step()
 
-            # ── Фаза валидации ──
             model.eval()
-            with torch.no_grad():  # отключаем вычисление градиентов для валидации
-                val_out = model(val_X)
-                val_loss = criterion(val_out, val_y).item()
+            with torch.no_grad():
+                val_out   = model(val_X)
+                val_loss  = criterion(val_out, val_y).item()
+                train_out_full  = model(train_ds.tensors[0])
+                train_loss_val  = criterion(train_out_full, train_ds.tensors[1]).item()
 
+            history_train_loss.append(round(float(train_loss_val), 5))
+            history_val_loss.append(round(float(val_loss), 5))
             scheduler.step(val_loss)
 
-            # Early stopping: если val_loss не улучшается — прекращаем
             if val_loss < best_val_loss:
-                best_val_loss = val_loss
+                best_val_loss   = val_loss
                 patience_counter = 0
-                # Сохраняем лучшие веса
                 best_state = {k: v.clone() for k, v in model.state_dict().items()}
             else:
                 patience_counter += 1
                 if patience_counter >= self.patience:
                     break
 
-            # Восстанавливаем лучшие веса для инференса
         if best_state is not None:
             model.load_state_dict(best_state)
+
+        self.train_history = {
+            'train_loss': history_train_loss,
+            'val_loss':   history_val_loss,
+            'n_iter':     len(history_train_loss),
+        }
 
         model.eval()
         with torch.no_grad():
             test_out = model(test_X)
 
         if self.task_type == 'classification':
-            # argmax по классам → индекс предсказанного класса
             pred_indices = test_out.argmax(dim=1).cpu().numpy()
             preds = self._le.inverse_transform(pred_indices)
             y_test_orig = y_test2
@@ -533,15 +545,15 @@ class PyTorchMLPEngine:
         if self.task_type == 'classification':
             self.conf_matrix = confusion_matrix(y_test, preds, labels=self.class_labels)
             return {
-                'Accuracy': round(accuracy_score(y_test, preds), 3),
+                'Accuracy':  round(accuracy_score(y_test, preds), 3),
                 'Precision': round(precision_score(y_test, preds, average='macro', zero_division=0), 3),
-                'Recall': round(recall_score(y_test, preds, average='macro', zero_division=0), 3),
+                'Recall':    round(recall_score(y_test, preds, average='macro', zero_division=0), 3),
             }
         else:
             self.conf_matrix = None
             return {
-                'R²': round(r2_score(y_test, preds), 3),
-                'MAE': round(mean_absolute_error(y_test, preds), 3),
+                'R²':   round(r2_score(y_test, preds), 3),
+                'MAE':  round(mean_absolute_error(y_test, preds), 3),
                 'RMSE': round(float(np.sqrt(mean_squared_error(y_test, preds))), 3),
             }
 
@@ -553,11 +565,15 @@ class PyTorchMLPEngine:
         except Exception:
             device = "CPU"
         arch = " → ".join([str(d) for d in self.hidden_dims])
+        hist = self.train_history or {}
+        n_iter = hist.get('n_iter', self.max_epochs)
+        stopped = n_iter < self.max_epochs
+        stop_note = f"Early stopping на эпохе **{n_iter}**." if stopped else f"Обучение завершено за **{n_iter}** эпох."
         return (
             f"**PyTorch MLP** (задача {tl}). "
             f"Архитектура: вход → **{arch}** → выход. "
             f"BatchNorm + Dropout({self.dropout}) на каждом слое. "
-            f"Adam lr={self.lr}, early stopping. "
+            f"Adam lr={self.lr}. {stop_note} "
             f"Устройство: {device}."
         )
 
@@ -565,22 +581,21 @@ class PyTorchMLPEngine:
         try:
             import torch
             state = self._model.state_dict() if self._model else None
-            # Переносим на CPU перед сохранением — для совместимости при загрузке без GPU
             if state:
                 state = {k: v.cpu() for k, v in state.items()}
         except Exception:
             state = None
 
         joblib.dump({
-            "model_state": state,
-            "model_config": {
+            "model_state":   state,
+            "model_config":  {
                 "hidden_dims": self.hidden_dims,
-                "dropout": self.dropout,
+                "dropout":     self.dropout,
             },
-            "preprocessor": self._preprocessor,
+            "preprocessor":  self._preprocessor,
             "label_encoder": self._le,
-            "features": self.features,
-            "task_type": self.task_type,
-            "class_labels": self.class_labels,
-            "nn_type": "pytorch_mlp",
+            "features":      self.features,
+            "task_type":     self.task_type,
+            "class_labels":  self.class_labels,
+            "nn_type":       "pytorch_mlp",
         }, path)
