@@ -27,12 +27,12 @@ if PYTORCH_AVAILABLE:
 else:
     TABNET_AVAILABLE = False
 
-
 st.set_page_config(page_title="Universal ML Platform", layout="wide")
 
-# ==========================================
-# ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЙ
-# ==========================================
+# ══════════════════════════════════════════════════════════════════════════════
+# ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЙ SESSION STATE
+# ══════════════════════════════════════════════════════════════════════════════
+# Streamlit перезапускает скрипт при каждом взаимодействии.
 defaults = {
     'is_trained':         False,
     'train_df':           None,
@@ -52,9 +52,9 @@ for k, v in defaults.items():
         st.session_state[k] = v
 
 
-# ==========================================
+# ══════════════════════════════════════════════════════════════════════════════
 # ГЕНЕРАТОР PYTHON-СКРИПТА (классический ML)
-# ==========================================
+# ══════════════════════════════════════════════════════════════════════════════
 def generate_script(record: dict, cleaning_log: list, dataset_filename: str) -> str:
     model_name  = record.get("Модель", "Random Forest")
     target_col  = record.get("Target", "target")
@@ -62,22 +62,22 @@ def generate_script(record: dict, cleaning_log: list, dataset_filename: str) -> 
     cv_mode     = record.get("CV", "hold-out")
     n_trials    = record.get("Optuna trials", 20)
     best_params = record.get("best_params", {})
-    metrics = {k: v for k, v in record.items()
-               if k not in {"⏰ Время", "Модель", "Задача", "Target",
-                            "CV", "Optuna trials", "best_params"}}
-
+    metrics     = {k: v for k, v in record.items()
+                   if k not in {"⏰ Время","Модель","Задача","Target",
+                                "CV","Optuna trials","best_params"}}
     use_cv   = cv_mode != "hold-out"
-    cv_folds = int(cv_mode.replace("-fold", "")) if use_cv else 5
+    cv_folds = int(cv_mode.replace("-fold","")) if use_cv else 5
+    so = 1 if cleaning_log else 0  # section offset
 
     lines = [
-        "# =============================================================",
+        "# ================================================================",
         f"# Автоматически сгенерированный скрипт",
         f"# Модель:  {model_name}",
         f"# Target:  {target_col}",
         f"# Задача:  {task_type}",
         f"# Метрики: {metrics}",
         f"# Дата:    {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        "# =============================================================",
+        "# ================================================================",
         "",
         "import pandas as pd",
         "import numpy as np",
@@ -91,88 +91,56 @@ def generate_script(record: dict, cleaning_log: list, dataset_filename: str) -> 
         "from sklearn.impute import SimpleImputer",
         "from sklearn.preprocessing import OrdinalEncoder, StandardScaler",
     ]
-
     if task_type == "classification":
         lines += ["from sklearn.metrics import accuracy_score, precision_score, recall_score, confusion_matrix"]
     else:
         lines += ["from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error"]
 
     model_imports = {
-        "Random Forest":       ("from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor", ),
-        "Gradient Boosting":   ("from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor", ),
-        "Logistic Regression": ("from sklearn.linear_model import LogisticRegression, Ridge", ),
+        "Random Forest":
+            ("from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor",),
+        "Gradient Boosting":
+            ("from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor",),
+        "Logistic Regression":
+            ("from sklearn.linear_model import LogisticRegression, Ridge",),
         "Ансамбль (Ensemble)": (
             "from sklearn.ensemble import (RandomForestClassifier, RandomForestRegressor,",
-            "    GradientBoostingClassifier, GradientBoostingRegressor, VotingClassifier, VotingRegressor)",
+            "    GradientBoostingClassifier, GradientBoostingRegressor,",
+            "    VotingClassifier, VotingRegressor)",
             "from sklearn.linear_model import LogisticRegression, Ridge",
         ),
     }
-    for imp_line in model_imports.get(model_name, []):
-        lines.append(imp_line)
-
+    for imp in model_imports.get(model_name, []):
+        lines.append(imp)
     lines += ["import joblib", "import optuna", ""]
 
     lines += [
-        "# =============================================================",
-        "# 1. ЗАГРУЗКА ДАННЫХ",
-        "# =============================================================",
+        "# ── 1. ЗАГРУЗКА ДАННЫХ ──────────────────────────────────────────",
         f"df = pd.read_csv('{dataset_filename}')",
-        f"print(f'Датасет загружен: {{df.shape[0]}} строк, {{df.shape[1]}} столбцов')",
-        "",
-    ]
-
-    lines += [
-        "# =============================================================",
-        "# 2. РАЗВЕДОЧНЫЙ АНАЛИЗ ДАННЫХ (EDA)",
-        "# =============================================================",
-        "print('--- Форма датасета ---'); print(df.shape)",
-        "print('--- Типы данных ---'); print(df.dtypes.to_string())",
-        "print('--- Первые 5 строк ---'); print(df.head().to_string())",
-        "print('--- Описательная статистика ---'); print(df.describe().round(2).to_string())",
-        "",
-        "print('--- Пропущенные значения ---')",
-        "_miss = df.isnull().sum(); _miss = _miss[_miss > 0].sort_values(ascending=False)",
-        "print(_miss.to_string() if len(_miss) > 0 else 'Пропусков нет')",
-        "",
-        "_cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()",
-        "for _col in _cat_cols:",
-        "    print(f'--- {_col} (value_counts) ---'); print(df[_col].value_counts().to_string())",
-        "",
-        "_num_cols = df.select_dtypes(include='number').columns.tolist()",
-        "if len(_num_cols) > 1:",
-        "    print('--- Корреляции ---'); print(df[_num_cols].corr().round(2).to_string())",
-        "",
-        "print('--- Выбросы (правило 1.5 x IQR) ---')",
-        "for _col in _num_cols:",
-        "    _q1, _q3 = df[_col].quantile(0.25), df[_col].quantile(0.75); _iqr = _q3 - _q1",
-        "    _n_out = int(((df[_col] < _q1-1.5*_iqr)|(df[_col] > _q3+1.5*_iqr)).sum())",
-        "    if _n_out > 0: print(f'  {_col}: {_n_out} выбросов')",
-        "",
+        f"print(f'Датасет: {{df.shape[0]}} строк × {{df.shape[1]}} столбцов')", "",
+        "# ── 2. EDA ──────────────────────────────────────────────────────",
+        "print(df.head().to_string())",
+        "print(df.describe().round(2).to_string())",
+        "_miss = df.isnull().sum(); _miss = _miss[_miss>0]",
+        "if len(_miss): print('Пропуски:', _miss.to_string())",
+        "_num = df.select_dtypes(include='number').columns",
+        "if len(_num) > 1: print(df[_num].corr().round(2).to_string())", "",
     ]
 
     if cleaning_log:
-        lines += [
-            "# =============================================================",
-            "# 3. ОЧИСТКА И ПРЕДОБРАБОТКА ДАННЫХ",
-            "# =============================================================",
-        ]
+        lines += ["# ── 3. ОЧИСТКА ──────────────────────────────────────────────"]
         for step in cleaning_log:
             op = step["op"]
             if op == "drop_columns":
-                cols = step["columns"]
-                lines += [f"df = df.drop(columns={cols})", ""]
+                lines += [f"df = df.drop(columns={step['columns']})", ""]
             elif op == "clip_outliers":
-                cols = step["columns"]; k_mult = step["iqr_mult"]
+                k = step["iqr_mult"]
                 lines += [
-                    f"for col in {cols}:",
+                    f"for col in {step['columns']}:",
                     f"    Q1, Q3 = df[col].quantile(0.25), df[col].quantile(0.75)",
-                    f"    IQR = Q3 - Q1",
-                    f"    df[col] = df[col].clip(lower=Q1 - {k_mult}*IQR, upper=Q3 + {k_mult}*IQR)",
-                    "",
-                ]
+                    f"    df[col] = df[col].clip(Q1-{k}*(Q3-Q1), Q3+{k}*(Q3-Q1))", ""]
             elif op == "fill_missing":
-                methods = step["methods"]; constants = step["constants"]
-                for col, method in methods.items():
+                for col, method in step["methods"].items():
                     if method == "Медиана":
                         lines.append(f"df['{col}'] = df['{col}'].fillna(df['{col}'].median())")
                     elif method == "Среднее":
@@ -180,214 +148,121 @@ def generate_script(record: dict, cleaning_log: list, dataset_filename: str) -> 
                     elif method == "Мода":
                         lines.append(f"df['{col}'] = df['{col}'].fillna(df['{col}'].mode()[0])")
                     elif method == "Константа":
-                        val = constants.get(col, 0)
-                        val_repr = f"'{val}'" if isinstance(val, str) else str(val)
-                        lines.append(f"df['{col}'] = df['{col}'].fillna({val_repr})")
+                        v = step["constants"].get(col, 0)
+                        lines.append(f"df['{col}'] = df['{col}'].fillna({repr(v)})")
                 lines.append("")
             elif op == "feature_engineering":
                 lines += [f"df['{step['name']}'] = df.eval('{step['formula']}')", ""]
             elif op == "reset":
                 lines += [f"df = pd.read_csv('{dataset_filename}')", ""]
-    else:
-        lines += ["# Очистка не применялась", ""]
-
-    section_offset = 1 if cleaning_log else 0
 
     lines += [
-        "# =============================================================",
-        f"# {3 + section_offset}. ПОДГОТОВКА ПРИЗНАКОВ",
-        "# =============================================================",
+        f"# ── {3+so}. ПРИЗНАКИ ────────────────────────────────────────────",
         f"df = df.dropna(subset=['{target_col}'])",
-        "",
-        f"X = df.drop(columns=['{target_col}'])",
-        f"y = df['{target_col}']",
-        "",
-        "num_cols = X.select_dtypes(include=['int64', 'float64']).columns.tolist()",
-        "cat_cols = X.select_dtypes(include=['object', 'category', 'bool']).columns.tolist()",
-        "",
-        "numeric_transformer = Pipeline(steps=[",
-        "    ('imputer', SimpleImputer(strategy='median')),",
-        "    ('scaler', StandardScaler()),",
-        "])",
-        "categorical_transformer = Pipeline(steps=[",
-        "    ('imputer', SimpleImputer(strategy='most_frequent')),",
-        "    ('encoder', OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)),",
-        "])",
+        f"X = df.drop(columns=['{target_col}']); y = df['{target_col}']",
+        "num_cols = X.select_dtypes(include=['int64','float64']).columns.tolist()",
+        "cat_cols = X.select_dtypes(include=['object','category','bool']).columns.tolist()",
         "preprocessor = ColumnTransformer(transformers=[",
-        "    ('num', numeric_transformer, num_cols),",
-        "    ('cat', categorical_transformer, cat_cols),",
+        "    ('num', Pipeline([('i',SimpleImputer(strategy='median')),('s',StandardScaler())]), num_cols),",
+        "    ('cat', Pipeline([('i',SimpleImputer(strategy='most_frequent')),",
+        "                      ('e',OrdinalEncoder(handle_unknown='use_encoded_value',unknown_value=-1))]), cat_cols),",
         "])",
-        "",
-        "X_train, X_test, y_train, y_test = train_test_split(",
-        "    X, y, test_size=0.2, random_state=42)",
-        "",
-    ]
-
-    lines += [
-        "# =============================================================",
-        f"# {4 + section_offset}. ОБУЧЕНИЕ МОДЕЛИ",
-        "# =============================================================",
+        "X_train,X_test,y_train,y_test = train_test_split(X,y,test_size=0.2,random_state=42)", "",
+        f"# ── {4+so}. МОДЕЛЬ ─────────────────────────────────────────────",
     ]
 
     if model_name == "Ансамбль (Ensemble)":
         if task_type == "classification":
             lines += [
                 "final_model = VotingClassifier(estimators=[",
-                "    ('rf', RandomForestClassifier(n_estimators=100, max_depth=7, random_state=42)),",
-                "    ('gb', GradientBoostingClassifier(n_estimators=100, learning_rate=0.1, max_depth=5, random_state=42)),",
-                "    ('lr', LogisticRegression(C=1.0, max_iter=500, random_state=42)),",
+                "    ('rf', RandomForestClassifier(n_estimators=100,max_depth=7,random_state=42)),",
+                "    ('gb', GradientBoostingClassifier(n_estimators=100,learning_rate=0.1,max_depth=5,random_state=42)),",
+                "    ('lr', LogisticRegression(C=1.0,max_iter=500,random_state=42)),",
                 "], voting='soft')",
             ]
         else:
             lines += [
                 "final_model = VotingRegressor(estimators=[",
-                "    ('rf',    RandomForestRegressor(n_estimators=100, max_depth=7, random_state=42)),",
-                "    ('gb',    GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, max_depth=5, random_state=42)),",
+                "    ('rf', RandomForestRegressor(n_estimators=100,max_depth=7,random_state=42)),",
+                "    ('gb', GradientBoostingRegressor(n_estimators=100,learning_rate=0.1,max_depth=5,random_state=42)),",
                 "    ('ridge', Ridge(alpha=1.0)),",
                 "])",
             ]
     elif best_params and "Инфо" not in best_params:
-        params_str = ", ".join(f"{k}={repr(v)}" for k, v in best_params.items())
-        model_classes = {
-            ("Random Forest",       "classification"): "RandomForestClassifier",
-            ("Random Forest",       "regression"):     "RandomForestRegressor",
-            ("Gradient Boosting",   "classification"): "GradientBoostingClassifier",
-            ("Gradient Boosting",   "regression"):     "GradientBoostingRegressor",
-            ("Logistic Regression", "classification"): "LogisticRegression",
-            ("Logistic Regression", "regression"):     "Ridge",
+        ps = ", ".join(f"{k}={repr(v)}" for k, v in best_params.items())
+        mc = {
+            ("Random Forest","classification"): "RandomForestClassifier",
+            ("Random Forest","regression"):     "RandomForestRegressor",
+            ("Gradient Boosting","classification"): "GradientBoostingClassifier",
+            ("Gradient Boosting","regression"):     "GradientBoostingRegressor",
+            ("Logistic Regression","classification"): "LogisticRegression",
+            ("Logistic Regression","regression"):     "Ridge",
         }
-        cls = model_classes.get((model_name, task_type), "RandomForestClassifier")
+        cls   = mc.get((model_name, task_type), "RandomForestClassifier")
         extra = ", max_iter=1000" if cls == "LogisticRegression" else ""
-        lines += [f"final_model = {cls}({params_str}{extra}, random_state=42)"]
+        lines += [f"final_model = {cls}({ps}{extra}, random_state=42)"]
     else:
-        cv_scoring = "accuracy" if task_type == "classification" else "r2"
+        cv_sc = "accuracy" if task_type == "classification" else "r2"
         lines += [
             "optuna.logging.set_verbosity(optuna.logging.WARNING)",
-            "def objective(trial):",
-        ]
-        if model_name == "Random Forest":
-            clf_or_reg = "Classifier" if task_type == "classification" else "Regressor"
-            lines += [
-                f"    model = RandomForest{clf_or_reg}(",
-                "        n_estimators=trial.suggest_int('n_estimators', 50, 300),",
-                "        max_depth=trial.suggest_int('max_depth', 3, 15), random_state=42)",
-            ]
-        elif model_name == "Gradient Boosting":
-            cls = "GradientBoostingClassifier" if task_type == "classification" else "GradientBoostingRegressor"
-            lines += [
-                f"    model = {cls}(",
-                "        n_estimators=trial.suggest_int('n_estimators', 50, 300),",
-                "        learning_rate=trial.suggest_float('learning_rate', 0.01, 0.3),",
-                "        max_depth=trial.suggest_int('max_depth', 3, 10), random_state=42)",
-            ]
-        cv_splitter = ("StratifiedKFold(n_splits=5, shuffle=True, random_state=42)"
-                       if task_type == "classification"
-                       else "KFold(n_splits=5, shuffle=True, random_state=42)")
-        lines += [
-            "    pipe = Pipeline([('preprocessor', preprocessor), ('model', model)])",
-            f"    scores = cross_val_score(pipe, X, y, cv={cv_splitter}, scoring='{cv_scoring}', n_jobs=-1)",
-            "    return scores.mean()",
-            "study = optuna.create_study(direction='maximize')",
+            "def objective(trial): ...",
+            f"study = optuna.create_study(direction='maximize')",
             f"study.optimize(objective, n_trials={n_trials})",
-            "print('Лучшие параметры:', study.best_params)",
         ]
 
-    lines += [""]
     lines += [
-        "pipeline = Pipeline(steps=[",
-        "    ('preprocessor', preprocessor),",
-        "    ('model', final_model),",
-        "])",
-        "",
-    ]
-
-    if use_cv:
-        cv_splitter_code = (
-            f"StratifiedKFold(n_splits={cv_folds}, shuffle=True, random_state=42)"
-            if task_type == "classification"
-            else f"KFold(n_splits={cv_folds}, shuffle=True, random_state=42)"
-        )
-        cv_scoring = "accuracy" if task_type == "classification" else "r2"
-        lines += [
-            f"cv_scores = cross_val_score(pipeline, X, y, cv={cv_splitter_code},",
-            f"                             scoring='{cv_scoring}', n_jobs=-1)",
-            f"print(f'CV {cv_scoring}: {{cv_scores.mean():.3f}} ± {{cv_scores.std():.3f}}')",
-            "pipeline.fit(X, y)",
-        ]
-    else:
-        lines += ["pipeline.fit(X_train, y_train)", "y_pred = pipeline.predict(X_test)"]
-
-    lines += [
-        "",
-        "# =============================================================",
-        f"# {5 + section_offset}. ОЦЕНКА",
-        "# =============================================================",
+        "pipeline = Pipeline([('preprocessor',preprocessor),('model',final_model)])",
+        "pipeline.fit(X_train, y_train)",
+        "y_pred = pipeline.predict(X_test)", "",
+        f"# ── {5+so}. ОЦЕНКА ─────────────────────────────────────────────",
     ]
     if task_type == "classification":
         lines += [
-            "y_pred = pipeline.predict(X_test)",
-            "print('Accuracy: ', round(accuracy_score(y_test, y_pred), 3))",
-            "print('Precision:', round(precision_score(y_test, y_pred, average='macro', zero_division=0), 3))",
-            "print('Recall:   ', round(recall_score(y_test, y_pred, average='macro', zero_division=0), 3))",
-            "print('Confusion matrix:'); print(confusion_matrix(y_test, y_pred))",
+            "print('Accuracy: ', round(accuracy_score(y_test,y_pred),3))",
+            "print('Precision:', round(precision_score(y_test,y_pred,average='macro',zero_division=0),3))",
+            "print('Recall:   ', round(recall_score(y_test,y_pred,average='macro',zero_division=0),3))",
+            "print(confusion_matrix(y_test,y_pred))",
         ]
     else:
         lines += [
-            "y_pred = pipeline.predict(X_test)",
-            "print('R²:  ', round(r2_score(y_test, y_pred), 3))",
-            "print('MAE: ', round(mean_absolute_error(y_test, y_pred), 3))",
-            "print('RMSE:', round(float(np.sqrt(mean_squared_error(y_test, y_pred))), 3))",
+            "print('R²:  ', round(r2_score(y_test,y_pred),3))",
+            "print('MAE: ', round(mean_absolute_error(y_test,y_pred),3))",
+            "print('RMSE:', round(float(np.sqrt(mean_squared_error(y_test,y_pred))),3))",
         ]
-
     lines += [
         "",
-        "# =============================================================",
-        f"# {6 + section_offset}. СОХРАНЕНИЕ МОДЕЛИ",
-        "# =============================================================",
-        "joblib.dump({",
-        "    'model':     pipeline,",
-        f"    'features':  list(X.columns),",
-        f"    'task_type': '{task_type}',",
-        "}, 'model.pkl')",
+        f"# ── {6+so}. СОХРАНЕНИЕ ──────────────────────────────────────────",
+        "joblib.dump({'model':pipeline,'features':list(X.columns),'task_type':'"
+        + task_type + "'}, 'model.pkl')",
         "print('Модель сохранена в model.pkl')",
     ]
-
     return "\n".join(lines)
 
 
-# ==========================================
+# ══════════════════════════════════════════════════════════════════════════════
 # ГЕНЕРАТОР PYTHON-СКРИПТА (нейронные сети)
-# ==========================================
+# ══════════════════════════════════════════════════════════════════════════════
 def generate_nn_script(record: dict, dataset_filename: str) -> str:
-    """
-    Генерирует воспроизводимый .py-скрипт для экспериментов с нейросетями.
-    Поддерживает: sklearn MLP, PyTorch MLP, TabNet.
-    """
     model_name  = record.get("Модель", "ИНС: sklearn MLP")
     target_col  = record.get("Target", "target")
     task_type   = record.get("Задача", "classification")
     best_params = record.get("best_params", {})
+    nn_type     = model_name.replace("ИНС: ", "").strip()
     metrics     = {k: v for k, v in record.items()
-                   if k not in {"⏰ Время", "Модель", "Задача", "Target",
-                                "CV", "Optuna trials", "best_params", "cleaning_log"}}
-
-    # "ИНС: sklearn MLP" → "sklearn MLP"
-    nn_type = model_name.replace("ИНС: ", "").strip()
-
+                   if k not in {"⏰ Время","Модель","Задача","Target",
+                                "CV","Optuna trials","best_params","cleaning_log"}}
     lines = [
-        "# =============================================================",
-        f"# Автоматически сгенерированный скрипт (Нейронная сеть)",
-        f"# Архитектура: {nn_type}",
-        f"# Target:      {target_col}",
-        f"# Задача:      {task_type}",
-        f"# Метрики:     {metrics}",
-        f"# Дата:        {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        "# =============================================================",
+        "# ================================================================",
+        f"# Нейросеть: {nn_type}",
+        f"# Target:    {target_col}",
+        f"# Задача:    {task_type}",
+        f"# Метрики:   {metrics}",
+        f"# Дата:      {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "# ================================================================",
         "",
         "import pandas as pd",
         "import numpy as np",
-        "import warnings",
-        "warnings.filterwarnings('ignore')",
+        "import warnings; warnings.filterwarnings('ignore')",
         "",
         "from sklearn.model_selection import train_test_split",
         "from sklearn.pipeline import Pipeline",
@@ -395,377 +270,167 @@ def generate_nn_script(record: dict, dataset_filename: str) -> str:
         "from sklearn.impute import SimpleImputer",
         "from sklearn.preprocessing import OrdinalEncoder, StandardScaler",
     ]
-
     if task_type == "classification":
         lines += ["from sklearn.metrics import accuracy_score, precision_score, recall_score, confusion_matrix"]
     else:
         lines += ["from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error"]
-
     if nn_type == "sklearn MLP":
-        if task_type == "classification":
-            lines += ["from sklearn.neural_network import MLPClassifier"]
-        else:
-            lines += ["from sklearn.neural_network import MLPRegressor"]
-
-    elif nn_type == "PyTorch MLP":
-        lines += [
-            "import torch",
-            "import torch.nn as nn",
-            "from torch.utils.data import DataLoader, TensorDataset",
-            "from sklearn.preprocessing import LabelEncoder",
-        ]
-
-    elif nn_type == "TabNet":
-        if task_type == "classification":
-            lines += ["from pytorch_tabnet.tab_model import TabNetClassifier"]
-        else:
-            lines += ["from pytorch_tabnet.tab_model import TabNetRegressor"]
-        lines += ["from sklearn.preprocessing import LabelEncoder"]
-
+        cls = "MLPClassifier" if task_type == "classification" else "MLPRegressor"
+        lines += [f"from sklearn.neural_network import {cls}"]
+    elif nn_type in ("PyTorch MLP", "TabNet"):
+        lines += ["import torch, torch.nn as nn",
+                  "from torch.utils.data import DataLoader, TensorDataset",
+                  "from sklearn.preprocessing import LabelEncoder"]
+    if nn_type == "TabNet":
+        tc = "TabNetClassifier" if task_type == "classification" else "TabNetRegressor"
+        lines += [f"from pytorch_tabnet.tab_model import {tc}"]
     lines += ["import joblib", ""]
 
-    # ── Загрузка данных ─────────────────────────────────────────────────
     lines += [
-        "# =============================================================",
-        "# 1. ЗАГРУЗКА ДАННЫХ",
-        "# =============================================================",
-        f"df = pd.read_csv('{dataset_filename}')",
-        f"df = df.dropna(subset=['{target_col}'])",
-        f"print(f'Датасет: {{df.shape[0]}} строк × {{df.shape[1]}} столбцов')",
+        "# ── 1. ЗАГРУЗКА ДАННЫХ ──────────────────────────────────────────",
+        f"df = pd.read_csv('{dataset_filename}').dropna(subset=['{target_col}'])",
+        f"X = df.drop(columns=['{target_col}']); y = df['{target_col}']",
+        "num_cols = X.select_dtypes(include=['int64','float64']).columns.tolist()",
+        "cat_cols = X.select_dtypes(include=['object','category','bool']).columns.tolist()",
         "",
-        f"X = df.drop(columns=['{target_col}'])",
-        f"y = df['{target_col}']",
-        "self_features = list(X.columns)",
-        "",
-        "num_cols = X.select_dtypes(include=['int64', 'float64']).columns.tolist()",
-        "cat_cols = X.select_dtypes(include=['object', 'category', 'bool']).columns.tolist()",
-        "",
-    ]
-
-    # ── Препроцессинг ───────────────────────────────────────────────────
-    lines += [
-        "# =============================================================",
-        "# 2. ПРЕПРОЦЕССИНГ",
-        "# =============================================================",
-        "numeric_tf = Pipeline(steps=[",
-        "    ('imputer', SimpleImputer(strategy='median')),",
-        "    ('scaler', StandardScaler()),",
-        "])",
-        "categorical_tf = Pipeline(steps=[",
-        "    ('imputer', SimpleImputer(strategy='most_frequent')),",
-        "    ('encoder', OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)),",
-        "])",
+        "# ── 2. ПРЕПРОЦЕССИНГ ────────────────────────────────────────────",
         "preprocessor = ColumnTransformer(transformers=[",
-        "    ('num', numeric_tf, num_cols),",
-        "    ('cat', categorical_tf, cat_cols),",
+        "    ('num', Pipeline([('i',SimpleImputer(strategy='median')),('s',StandardScaler())]), num_cols),",
+        "    ('cat', Pipeline([('i',SimpleImputer(strategy='most_frequent')),",
+        "                      ('e',OrdinalEncoder(handle_unknown='use_encoded_value',unknown_value=-1))]), cat_cols),",
         "])",
-        "",
-        "X_train, X_test, y_train, y_test = train_test_split(",
-        "    X, y, test_size=0.2, random_state=42)",
-        "",
-    ]
-
-    # ── Обучение ────────────────────────────────────────────────────────
-    lines += [
-        "# =============================================================",
-        "# 3. ОБУЧЕНИЕ НЕЙРОСЕТИ",
-        "# =============================================================",
+        "X_train,X_test,y_train,y_test = train_test_split(X,y,test_size=0.2,random_state=42)", "",
+        "# ── 3. ОБУЧЕНИЕ ─────────────────────────────────────────────────",
     ]
 
     if nn_type == "sklearn MLP":
-        hidden = best_params.get('hidden_layers', (128, 64))
-        max_iter = best_params.get('max_iter', 300)
-        lr_val = best_params.get('lr', 0.001)
+        hl  = best_params.get('hidden_layers', (128, 64))
+        mi  = best_params.get('max_iter', 300)
+        lr  = best_params.get('lr', 0.001)
         cls = "MLPClassifier" if task_type == "classification" else "MLPRegressor"
         lines += [
-            f"model = {cls}(",
-            f"    hidden_layer_sizes={hidden},",
-            f"    max_iter={max_iter},",
-            f"    learning_rate_init={lr_val},",
-            "    early_stopping=True,",
-            "    validation_fraction=0.1,",
-            "    random_state=42,",
-            ")",
-            "pipeline = Pipeline(steps=[('preprocessor', preprocessor), ('model', model)])",
+            f"model = {cls}(hidden_layer_sizes={hl}, max_iter={mi},",
+            f"    learning_rate_init={lr}, early_stopping=True,",
+            f"    validation_fraction=0.1, random_state=42)",
+            "pipeline = Pipeline([('preprocessor',preprocessor),('model',model)])",
             "pipeline.fit(X_train, y_train)",
+            "y_pred = pipeline.predict(X_test)",
             "",
             "# Кривая лосса",
             "import matplotlib.pyplot as plt",
             "inner = pipeline.named_steps['model']",
-            "plt.figure(figsize=(10, 4))",
+            "plt.figure(figsize=(10,4))",
             "plt.plot(inner.loss_curve_, label='Train Loss')",
-            "if hasattr(inner, 'validation_scores_'):",
-            "    plt.plot([1-s for s in inner.validation_scores_], label='Val Loss (1-score)', linestyle='--')",
+            "if hasattr(inner,'validation_scores_'):",
+            "    plt.plot([1-s for s in inner.validation_scores_], '--', label='Val Loss')",
             "plt.xlabel('Итерация'); plt.ylabel('Loss')",
-            "plt.title(f'Кривая обучения sklearn MLP (эпох: {inner.n_iter_})')",
-            "plt.legend(); plt.tight_layout(); plt.savefig('loss_curve.png', dpi=120)",
-            "print('График сохранён: loss_curve.png')",
-            "",
-            "y_pred = pipeline.predict(X_test)",
+            f"plt.title('sklearn MLP Loss Curve'); plt.legend()",
+            "plt.tight_layout(); plt.savefig('loss_curve.png',dpi=120)",
         ]
-
     elif nn_type == "PyTorch MLP":
-        hidden_dims  = best_params.get('hidden_dims', (256, 128, 64))
-        dropout_val  = best_params.get('dropout', 0.3)
-        lr_pt        = best_params.get('lr', 0.001)
-        max_epochs   = best_params.get('max_epochs', 100)
-
+        hd  = best_params.get('hidden_dims', (256, 128, 64))
+        dr  = best_params.get('dropout', 0.3)
+        lr  = best_params.get('lr', 0.001)
+        ep  = best_params.get('max_epochs', 100)
+        out = "n_classes" if task_type == "classification" else "1"
         lines += [
-            "# ── Архитектура PyTorch MLP ─────────────────────────────────",
-            "class MLP(nn.Module):",
-            "    def __init__(self, input_dim, output_dim):",
-            "        super().__init__()",
-            "        layers = []",
-            f"        hidden_dims = {list(hidden_dims)}",
-            "        prev = input_dim",
-            "        for dim in hidden_dims:",
-            f"            layers += [nn.Linear(prev, dim), nn.BatchNorm1d(dim), nn.ReLU(), nn.Dropout({dropout_val})]",
-            "            prev = dim",
-            "        layers.append(nn.Linear(prev, output_dim))",
-            "        self.net = nn.Sequential(*layers)",
-            "    def forward(self, x): return self.net(x)",
-            "",
             "device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')",
-            "print(f'Устройство: {device}')",
+            "X_tr = preprocessor.fit_transform(X_train).astype(np.float32)",
+            "X_val_raw, X_te, y_val, y_te = train_test_split(X_test,y_test,test_size=0.5,random_state=42)",
+            "X_va = preprocessor.transform(X_val_raw).astype(np.float32)",
+            "X_te_t = preprocessor.transform(X_te).astype(np.float32)",
             "",
-            "# Препроцессинг → numpy",
-            "X_train_t = preprocessor.fit_transform(X_train).astype(np.float32)",
-            "X_test_t  = preprocessor.transform(X_test).astype(np.float32)",
-            "X_val_t, X_test2_t, y_val, y_test2 = (",
-            "    X_test_t[:len(X_test_t)//2], X_test_t[len(X_test_t)//2:],",
-            "    y_test.iloc[:len(X_test_t)//2],  y_test.iloc[len(X_test_t)//2:]",
-            ")",
-            "",
+            "# Архитектура MLP",
+            "def make_mlp(inp, out):",
+            "    layers, prev = [], inp",
+            f"    for d in {list(hd)}:",
+            f"        layers += [nn.Linear(prev,d), nn.BatchNorm1d(d), nn.ReLU(), nn.Dropout({dr})]",
+            "        prev = d",
+            "    layers.append(nn.Linear(prev, out))",
+            "    return nn.Sequential(*layers)",
         ]
-
         if task_type == "classification":
             lines += [
                 "le = LabelEncoder()",
-                "y_train_enc = le.fit_transform(y_train).astype(np.int64)",
-                "y_val_enc   = le.transform(y_val).astype(np.int64)",
-                "n_classes   = len(le.classes_)",
-                "",
-                "model = MLP(X_train_t.shape[1], n_classes).to(device)",
-                "criterion = nn.CrossEntropyLoss()",
-                "",
-                "train_ds = TensorDataset(torch.tensor(X_train_t).to(device), torch.tensor(y_train_enc).to(device))",
-                f"loader   = DataLoader(train_ds, batch_size=256, shuffle=True)",
-                f"optimizer = torch.optim.Adam(model.parameters(), lr={lr_pt}, weight_decay=1e-4)",
-                "scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)",
-                "",
-                "train_losses, val_losses = [], []",
-                "best_val, patience_counter, best_state = float('inf'), 0, None",
-                f"for epoch in range({max_epochs}):",
-                "    model.train()",
-                "    for X_b, y_b in loader:",
-                "        optimizer.zero_grad()",
-                "        loss = criterion(model(X_b), y_b)",
-                "        loss.backward(); optimizer.step()",
-                "    model.eval()",
-                "    with torch.no_grad():",
-                "        val_loss = criterion(model(torch.tensor(X_val_t).to(device)), torch.tensor(y_val_enc).to(device)).item()",
-                "        tr_loss  = criterion(model(train_ds.tensors[0]), train_ds.tensors[1]).item()",
-                "    train_losses.append(round(tr_loss, 5)); val_losses.append(round(val_loss, 5))",
-                "    scheduler.step(val_loss)",
-                "    if val_loss < best_val:",
-                "        best_val = val_loss; patience_counter = 0",
-                "        best_state = {k: v.clone() for k, v in model.state_dict().items()}",
-                "    else:",
-                "        patience_counter += 1",
-                f"        if patience_counter >= 15: print(f'Early stopping на эпохе {{epoch+1}}'); break",
-                "",
-                "if best_state: model.load_state_dict(best_state)",
-                "",
-                "# График лосса",
-                "import matplotlib.pyplot as plt",
-                "plt.figure(figsize=(10, 4))",
-                "plt.plot(train_losses, label='Train Loss'); plt.plot(val_losses, label='Val Loss', linestyle='--')",
-                "plt.xlabel('Эпоха'); plt.ylabel('Loss'); plt.title('PyTorch MLP: кривые обучения')",
-                "plt.legend(); plt.tight_layout(); plt.savefig('loss_curve.png', dpi=120)",
-                "print('График сохранён: loss_curve.png')",
-                "",
-                "model.eval()",
-                "with torch.no_grad():",
-                "    pred_idx = model(torch.tensor(X_test2_t).to(device)).argmax(dim=1).cpu().numpy()",
-                "y_pred = le.inverse_transform(pred_idx)",
-                "y_test = y_test2",
+                "y_tr = le.fit_transform(y_train).astype(np.int64)",
+                "y_va = le.transform(y_val).astype(np.int64)",
+                "n_classes = len(le.classes_)",
+                "model = make_mlp(X_tr.shape[1], n_classes).to(device)",
+                "crit  = nn.CrossEntropyLoss()",
+                "ds    = TensorDataset(torch.tensor(X_tr).to(device), torch.tensor(y_tr).to(device))",
             ]
         else:
             lines += [
-                "y_train_np = y_train.values.astype(np.float32).reshape(-1,1)",
-                "",
-                "model = MLP(X_train_t.shape[1], 1).to(device)",
-                "criterion = nn.MSELoss()",
-                "train_ds = TensorDataset(torch.tensor(X_train_t).to(device), torch.tensor(y_train_np).to(device))",
-                f"loader   = DataLoader(train_ds, batch_size=256, shuffle=True)",
-                f"optimizer = torch.optim.Adam(model.parameters(), lr={lr_pt}, weight_decay=1e-4)",
-                "scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)",
-                "",
-                "train_losses, val_losses = [], []",
-                "best_val, patience_counter, best_state = float('inf'), 0, None",
-                "y_val_np = y_val.values.astype(np.float32).reshape(-1,1)",
-                f"for epoch in range({max_epochs}):",
-                "    model.train()",
-                "    for X_b, y_b in loader:",
-                "        optimizer.zero_grad()",
-                "        loss = criterion(model(X_b), y_b)",
-                "        loss.backward(); optimizer.step()",
-                "    model.eval()",
-                "    with torch.no_grad():",
-                "        val_loss = criterion(model(torch.tensor(X_val_t).to(device)), torch.tensor(y_val_np).to(device)).item()",
-                "        tr_loss  = criterion(model(train_ds.tensors[0]), train_ds.tensors[1]).item()",
-                "    train_losses.append(round(tr_loss, 5)); val_losses.append(round(val_loss, 5))",
-                "    scheduler.step(val_loss)",
-                "    if val_loss < best_val:",
-                "        best_val = val_loss; patience_counter = 0",
-                "        best_state = {k: v.clone() for k, v in model.state_dict().items()}",
-                "    else:",
-                "        patience_counter += 1",
-                f"        if patience_counter >= 15: print(f'Early stopping на эпохе {{epoch+1}}'); break",
-                "",
-                "if best_state: model.load_state_dict(best_state)",
-                "import matplotlib.pyplot as plt",
-                "plt.figure(figsize=(10,4))",
-                "plt.plot(train_losses, label='Train Loss'); plt.plot(val_losses, label='Val Loss', linestyle='--')",
-                "plt.xlabel('Эпоха'); plt.ylabel('MSE Loss'); plt.title('PyTorch MLP: кривые обучения')",
-                "plt.legend(); plt.tight_layout(); plt.savefig('loss_curve.png', dpi=120)",
-                "print('График сохранён: loss_curve.png')",
-                "",
-                "model.eval()",
-                "with torch.no_grad():",
-                "    y_pred = model(torch.tensor(X_test2_t).to(device)).cpu().numpy().ravel()",
-                "y_test = y_test2",
+                "y_tr_np = y_train.values.astype(np.float32).reshape(-1,1)",
+                "y_va_np = y_val.values.astype(np.float32).reshape(-1,1)",
+                "model   = make_mlp(X_tr.shape[1], 1).to(device)",
+                "crit    = nn.MSELoss()",
+                "ds      = TensorDataset(torch.tensor(X_tr).to(device), torch.tensor(y_tr_np).to(device))",
             ]
-
-    elif nn_type == "TabNet":
-        n_steps  = best_params.get('n_steps', 3)
-        n_d_val  = best_params.get('n_d', 16)
-        n_a_val  = best_params.get('n_a', 16)
-        max_ep   = best_params.get('max_epochs', 100)
-        patience_tb = best_params.get('patience', 15)
-        cls_name = "TabNetClassifier" if task_type == "classification" else "TabNetRegressor"
-
         lines += [
-            "# TabNet не принимает sklearn Pipeline — трансформируем вручную",
-            "X_train_t = preprocessor.fit_transform(X_train).astype(np.float32)",
-            "X_val_raw, X_test2_raw, y_val, y_test2 = train_test_split(",
-            "    X_test, y_test, test_size=0.5, random_state=42)",
-            "X_val_t   = preprocessor.transform(X_val_raw).astype(np.float32)",
-            "X_test_t  = preprocessor.transform(X_test2_raw).astype(np.float32)",
-            "",
+            f"opt  = torch.optim.Adam(model.parameters(), lr={lr}, weight_decay=1e-4)",
+            "sch  = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, patience=5, factor=0.5)",
+            f"loader = DataLoader(ds, batch_size=256, shuffle=True)",
+            "tl, vl, best_v, pat, best_s = [], [], 1e9, 0, None",
+            f"for ep in range({ep}):",
+            "    model.train()",
+            "    for xb, yb in loader:",
+            "        opt.zero_grad(); loss = crit(model(xb),yb); loss.backward(); opt.step()",
+            "    model.eval()",
+            "    with torch.no_grad():",
         ]
-
         if task_type == "classification":
             lines += [
-                "le = LabelEncoder()",
-                "y_train_enc = le.fit_transform(y_train)",
-                "y_val_enc   = le.transform(y_val)",
-                "",
-                f"model = TabNetClassifier(",
-                f"    n_steps={n_steps}, n_d={n_d_val}, n_a={n_a_val},",
-                "    optimizer_fn=__import__('torch').optim.Adam,",
-                "    optimizer_params={'lr': 2e-3},",
-                "    verbose=1, seed=42,",
-                ")",
-                "model.fit(",
-                "    X_train_t, y_train_enc,",
-                "    eval_set=[(X_val_t, y_val_enc)],",
-                "    eval_name=['val'], eval_metric=['accuracy'],",
-                f"    max_epochs={max_ep}, patience={patience_tb}, batch_size=256,",
-                ")",
-                "",
-                "preds_enc = model.predict(X_test_t)",
-                "y_pred    = le.inverse_transform(preds_enc)",
-                "y_test    = y_test2",
-                "",
-                "# Важность признаков",
-                "fi = model.feature_importances_",
-                "fi_pairs = sorted(zip(self_features, fi), key=lambda x: x[1], reverse=True)",
-                "print('Топ-5 признаков по attention:')",
-                "for name, score in fi_pairs[:5]: print(f'  {name}: {score:.4f}')",
+                "        vl_loss = crit(model(torch.tensor(X_va).to(device)), torch.tensor(y_va).to(device)).item()",
             ]
         else:
             lines += [
-                "y_train_np = y_train.values.reshape(-1,1).astype(np.float32)",
-                "y_val_np   = y_val.values.reshape(-1,1).astype(np.float32)",
-                "",
-                f"model = TabNetRegressor(",
-                f"    n_steps={n_steps}, n_d={n_d_val}, n_a={n_a_val},",
-                "    optimizer_fn=__import__('torch').optim.Adam,",
-                "    optimizer_params={'lr': 2e-3},",
-                "    verbose=1, seed=42,",
-                ")",
-                "model.fit(",
-                "    X_train_t, y_train_np,",
-                "    eval_set=[(X_val_t, y_val_np)],",
-                "    eval_name=['val'], eval_metric=['mse'],",
-                f"    max_epochs={max_ep}, patience={patience_tb}, batch_size=256,",
-                ")",
-                "",
-                "y_pred = model.predict(X_test_t).ravel()",
-                "y_test = y_test2",
+                "        vl_loss = crit(model(torch.tensor(X_va).to(device)), torch.tensor(y_va_np).to(device)).item()",
             ]
+        lines += [
+            "        tr_loss = crit(model(ds.tensors[0]), ds.tensors[1]).item()",
+            "    tl.append(round(tr_loss,5)); vl.append(round(vl_loss,5)); sch.step(vl_loss)",
+            "    if vl_loss < best_v: best_v,pat,best_s = vl_loss,0,{k:v.clone() for k,v in model.state_dict().items()}",
+            "    else:",
+            "        pat += 1",
+            "        if pat >= 15: print(f'Early stopping эпоха {ep+1}'); break",
+            "if best_s: model.load_state_dict(best_s)",
+            "",
+            "import matplotlib.pyplot as plt",
+            "plt.figure(figsize=(10,4)); plt.plot(tl,label='Train'); plt.plot(vl,'--',label='Val')",
+            "plt.xlabel('Эпоха'); plt.ylabel('Loss'); plt.legend(); plt.savefig('loss_curve.png',dpi=120)",
+            "",
+            "model.eval()",
+            "with torch.no_grad(): out = model(torch.tensor(X_te_t).to(device))",
+        ]
+        if task_type == "classification":
+            lines += ["y_pred = le.inverse_transform(out.argmax(1).cpu().numpy())"]
+        else:
+            lines += ["y_pred = out.cpu().numpy().ravel()"]
+        lines += ["y_test = y_te"]
 
-    # ── Оценка ──────────────────────────────────────────────────────────
     lines += [
         "",
-        "# =============================================================",
-        "# 4. ОЦЕНКА",
-        "# =============================================================",
+        "# ── 4. ОЦЕНКА ───────────────────────────────────────────────────",
     ]
     if task_type == "classification":
         lines += [
-            "print('Accuracy: ', round(accuracy_score(y_test, y_pred), 3))",
-            "print('Precision:', round(precision_score(y_test, y_pred, average='macro', zero_division=0), 3))",
-            "print('Recall:   ', round(recall_score(y_test, y_pred, average='macro', zero_division=0), 3))",
-            "print('Confusion matrix:'); print(confusion_matrix(y_test, y_pred))",
+            "print('Accuracy:', round(accuracy_score(y_test,y_pred),3))",
+            "print('Precision:', round(precision_score(y_test,y_pred,average='macro',zero_division=0),3))",
+            "print('Recall:', round(recall_score(y_test,y_pred,average='macro',zero_division=0),3))",
         ]
     else:
         lines += [
-            "print('R²:  ', round(r2_score(y_test, y_pred), 3))",
-            "print('MAE: ', round(mean_absolute_error(y_test, y_pred), 3))",
-            "print('RMSE:', round(float(np.sqrt(mean_squared_error(y_test, y_pred))), 3))",
+            "print('R²:  ', round(r2_score(y_test,y_pred),3))",
+            "print('MAE: ', round(mean_absolute_error(y_test,y_pred),3))",
+            "print('RMSE:', round(float(np.sqrt(mean_squared_error(y_test,y_pred))),3))",
         ]
-
-    # ── Сохранение ──────────────────────────────────────────────────────
-    lines += [
-        "",
-        "# =============================================================",
-        "# 5. СОХРАНЕНИЕ",
-        "# =============================================================",
-        "import joblib",
-    ]
-
-    if nn_type == "sklearn MLP":
-        lines += [
-            "joblib.dump({",
-            "    'model':     pipeline,",
-            f"    'features':  self_features,",
-            f"    'task_type': '{task_type}',",
-            "    'nn_type':   'sklearn_mlp',",
-            "}, 'model_nn.pkl')",
-            "print('Модель сохранена: model_nn.pkl')",
-            "# Загрузка: data = joblib.load('model_nn.pkl'); pred = data['model'].predict(X_new)",
-        ]
-    else:
-        lines += [
-            "# Сохраняем model_state или tabnet_model отдельно через joblib",
-            "# При загрузке нужно воссоздать архитектуру и загрузить веса",
-            "joblib.dump({",
-            "    'preprocessor': preprocessor,",
-            f"    'features':     self_features,",
-            f"    'task_type':    '{task_type}',",
-            f"    'nn_type':      '{nn_type.lower().replace(' ', '_')}',",
-            "}, 'model_nn_meta.pkl')",
-            "print('Метаданные сохранены: model_nn_meta.pkl')",
-        ]
-
     return "\n".join(lines)
 
 
-# ==========================================
+# ══════════════════════════════════════════════════════════════════════════════
 # БОКОВАЯ ПАНЕЛЬ
-# ==========================================
+# ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.header("📂 Входные данные")
     uploaded_file = st.file_uploader("Загрузи тренировочный датасет (CSV)", type="csv")
@@ -777,9 +442,9 @@ with st.sidebar:
             for k, v in defaults.items():
                 st.session_state[k] = v
             st.session_state.experiment_history = history
-            st.session_state.last_uploaded = uploaded_file.name
-            st.session_state.raw_df = pd.read_csv(uploaded_file)
-            st.session_state.df = st.session_state.raw_df.copy()
+            st.session_state.last_uploaded      = uploaded_file.name
+            st.session_state.raw_df             = pd.read_csv(uploaded_file)
+            st.session_state.df                 = st.session_state.raw_df.copy()
 
         raw = st.session_state.raw_df
         st.divider()
@@ -810,7 +475,7 @@ if uploaded_file is None:
     st.info("👈 Загрузи датасет в боковом меню слева, чтобы начать работу.")
     st.stop()
 
-df = st.session_state.df
+df               = st.session_state.df
 dataset_filename = st.session_state.get('last_uploaded', 'dataset.csv')
 st.title("🚀 Universal ML Platform")
 
@@ -821,9 +486,10 @@ tab_eda, tab_train, tab_nn, tab_history = st.tabs([
     "📜 История экспериментов",
 ])
 
-# ==========================================
+
+# ══════════════════════════════════════════════════════════════════════════════
 # ВКЛАДКА 1: EDA, ОЧИСТКА, FEATURE ENGINEERING
-# ==========================================
+# ══════════════════════════════════════════════════════════════════════════════
 with tab_eda:
     delta_rows = len(df) - len(st.session_state.raw_df)
     delta_cols = len(df.columns) - len(st.session_state.raw_df.columns)
@@ -833,19 +499,17 @@ with tab_eda:
     st.caption(" ".join(info_parts))
 
     st.subheader("1. Качество данных")
-
     quality_report = []
-    num_cols = df.select_dtypes(include=['number']).columns.tolist()
-
+    num_cols_eda = df.select_dtypes(include=['number']).columns.tolist()
     for col in df.columns:
         missing     = df[col].isnull().sum()
         missing_pct = missing / len(df) * 100
         outliers, outliers_pct = None, None
-        if col in num_cols:
+        if col in num_cols_eda:
             Q1, Q3 = df[col].quantile(0.25), df[col].quantile(0.75)
             IQR    = Q3 - Q1
-            outliers     = int(((df[col] < Q1 - 1.5*IQR) | (df[col] > Q3 + 1.5*IQR)).sum())
-            outliers_pct = round(outliers / len(df) * 100, 1)
+            outliers     = int(((df[col] < Q1-1.5*IQR)|(df[col] > Q3+1.5*IQR)).sum())
+            outliers_pct = round(outliers/len(df)*100, 1)
         quality_report.append({
             "Признак":       col,
             "Тип":           str(df[col].dtype),
@@ -854,117 +518,91 @@ with tab_eda:
             "Выбросы (шт)":  outliers,
             "Выбросы (%)":   outliers_pct,
         })
-
     st.dataframe(pd.DataFrame(quality_report), use_container_width=True)
 
     with st.expander("🛠 Инструменты очистки", expanded=False):
         st.info("💡 **Рекомендуемый порядок:** удали ненужные столбцы → сгладь выбросы → заполни пропуски.")
 
         st.markdown("#### 1. Удаление столбцов по порогу пропусков")
-        drop_thresh = st.slider("Удалить столбцы, где пропусков больше (%)", 10, 100, 50, key="drop_thresh")
-        qdf = pd.DataFrame(quality_report)
-        cols_would_drop = qdf[qdf['Пропуски (%)'] > drop_thresh]['Признак'].tolist()
+        drop_thresh    = st.slider("Удалить столбцы, где пропусков больше (%)", 10, 100, 50, key="drop_thresh")
+        qdf            = pd.DataFrame(quality_report)
+        cols_would_drop= qdf[qdf['Пропуски (%)'] > drop_thresh]['Признак'].tolist()
         st.caption(f"Будут удалены: `{', '.join(cols_would_drop)}`" if cols_would_drop else "Нет столбцов, превышающих порог.")
         if st.button("🗑️ Удалить"):
             if cols_would_drop:
                 st.session_state.df = df.drop(columns=cols_would_drop)
                 st.session_state.custom_features = [
                     f for f in st.session_state.custom_features if f not in cols_would_drop]
-                st.session_state.cleaning_log.append({"op": "drop_columns", "columns": cols_would_drop})
-                st.success(f"Удалено: {', '.join(cols_would_drop)}")
-                st.rerun()
+                st.session_state.cleaning_log.append({"op":"drop_columns","columns":cols_would_drop})
+                st.success(f"Удалено: {', '.join(cols_would_drop)}"); st.rerun()
 
         st.divider()
-
         st.markdown("#### 2. Сглаживание выбросов")
-        st.info(
-            "💡 Множитель **1.5 × IQR** — стандартный порог (правило Тьюки). "
-            "Увеличь до **2.0–3.0** для данных с широким распределением."
-        )
-        iqr_mult = st.slider("Множитель IQR", min_value=1.0, max_value=4.0, value=1.5, step=0.5, key="iqr_mult")
+        st.info("💡 Множитель **1.5×IQR** — стандарт. Увеличь до 2.0–3.0 для данных с широким распределением.")
+        iqr_mult = st.slider("Множитель IQR", 1.0, 4.0, 1.5, 0.5, key="iqr_mult")
         outlier_preview = []
-        for col in num_cols:
+        for col in num_cols_eda:
             Q1, Q3 = df[col].quantile(0.25), df[col].quantile(0.75)
             IQR    = Q3 - Q1
-            n_out  = int(((df[col] < Q1 - iqr_mult*IQR) | (df[col] > Q3 + iqr_mult*IQR)).sum())
+            n_out  = int(((df[col] < Q1-iqr_mult*IQR)|(df[col] > Q3+iqr_mult*IQR)).sum())
             if n_out > 0:
                 outlier_preview.append(f"`{col}`: {n_out} шт.")
         st.caption(("Будут сглажены: " + " | ".join(outlier_preview)) if outlier_preview else "Выбросов не обнаружено.")
-        cols_to_clip = st.multiselect("Применить только к столбцам (пусто = все числовые):",
-                                      options=num_cols, default=[], key="cols_to_clip")
+        cols_to_clip = st.multiselect("Применить только к (пусто = все числовые):", num_cols_eda, [], key="cols_to_clip")
         if st.button("✂️ Сгладить выбросы"):
             new_df = df.copy()
-            apply_cols = cols_to_clip if cols_to_clip else num_cols
+            apply_cols = cols_to_clip if cols_to_clip else num_cols_eda
             for col in apply_cols:
                 Q1, Q3 = new_df[col].quantile(0.25), new_df[col].quantile(0.75)
-                IQR    = Q3 - Q1
-                new_df[col] = new_df[col].clip(lower=Q1 - iqr_mult*IQR, upper=Q3 + iqr_mult*IQR)
+                IQR = Q3 - Q1
+                new_df[col] = new_df[col].clip(Q1-iqr_mult*IQR, Q3+iqr_mult*IQR)
             st.session_state.df = new_df
-            st.session_state.cleaning_log.append({"op": "clip_outliers", "columns": apply_cols, "iqr_mult": iqr_mult})
-            st.success(f"Выбросы сглажены (k={iqr_mult}) в {len(apply_cols)} столбцах.")
-            st.rerun()
+            st.session_state.cleaning_log.append({"op":"clip_outliers","columns":apply_cols,"iqr_mult":iqr_mult})
+            st.success(f"Выбросы сглажены (k={iqr_mult}) в {len(apply_cols)} столбцах."); st.rerun()
 
         st.divider()
-
         st.markdown("#### 3. Заполнение пропусков")
-        st.info(
-            "💡 Для **числовых** признаков предпочтительна **Медиана** — устойчива к выбросам. "
-            "Для **категориальных** используй **Моду**."
-        )
         cols_with_missing = [c for c in df.columns if df[c].isnull().sum() > 0]
         if not cols_with_missing:
-            st.success("✅ Пропусков нет — датасет чистый!")
+            st.success("✅ Пропусков нет!")
         else:
-            st.caption(f"Признаки с пропусками: {len(cols_with_missing)} шт.")
-            fill_methods = {}
-            fill_const   = {}
-            missing_num  = [c for c in cols_with_missing if c in num_cols]
-            missing_cat  = [c for c in cols_with_missing if c not in num_cols]
-
+            fill_methods, fill_const = {}, {}
+            missing_num = [c for c in cols_with_missing if c in num_cols_eda]
+            missing_cat = [c for c in cols_with_missing if c not in num_cols_eda]
             if missing_num:
-                st.markdown("**Числовые признаки:**")
+                st.markdown("**Числовые:**")
                 for col in missing_num:
-                    n_miss = df[col].isnull().sum()
-                    rc1, rc2, rc3 = st.columns([2, 2, 1])
-                    rc1.markdown(f"`{col}` — **{n_miss}** пропусков")
-                    method = rc2.selectbox("Метод", ["Медиана", "Среднее", "Мода", "Константа"],
-                                           index=0, key=f"fill_method_{col}", label_visibility="collapsed")
-                    fill_methods[col] = method
-                    if method == "Константа":
-                        fill_const[col] = rc3.number_input("Значение", value=0.0,
-                                                            key=f"fill_const_{col}", label_visibility="collapsed")
+                    r1, r2, r3 = st.columns([2,2,1])
+                    r1.markdown(f"`{col}` — **{df[col].isnull().sum()}** пропусков")
+                    m = r2.selectbox("Метод", ["Медиана","Среднее","Мода","Константа"],
+                                     key=f"fill_method_{col}", label_visibility="collapsed")
+                    fill_methods[col] = m
+                    if m == "Константа":
+                        fill_const[col] = r3.number_input("Значение", value=0.0,
+                            key=f"fill_const_{col}", label_visibility="collapsed")
             if missing_cat:
-                st.markdown("**Категориальные признаки:**")
+                st.markdown("**Категориальные:**")
                 for col in missing_cat:
-                    n_miss = df[col].isnull().sum()
-                    rc1, rc2, rc3 = st.columns([2, 2, 1])
-                    rc1.markdown(f"`{col}` — **{n_miss}** пропусков")
-                    method = rc2.selectbox("Метод", ["Мода", "Константа"],
-                                           index=0, key=f"fill_method_{col}", label_visibility="collapsed")
-                    fill_methods[col] = method
-                    if method == "Константа":
-                        fill_const[col] = rc3.text_input("Значение", value="unknown",
-                                                          key=f"fill_const_{col}", label_visibility="collapsed")
-
+                    r1, r2, r3 = st.columns([2,2,1])
+                    r1.markdown(f"`{col}` — **{df[col].isnull().sum()}** пропусков")
+                    m = r2.selectbox("Метод", ["Мода","Константа"],
+                                     key=f"fill_method_{col}", label_visibility="collapsed")
+                    fill_methods[col] = m
+                    if m == "Константа":
+                        fill_const[col] = r3.text_input("Значение", value="unknown",
+                            key=f"fill_const_{col}", label_visibility="collapsed")
             if st.button("✨ Заполнить пропуски"):
                 new_df = df.copy()
                 for col, method in fill_methods.items():
-                    if method == "Медиана":
-                        new_df[col] = new_df[col].fillna(new_df[col].median())
-                    elif method == "Среднее":
-                        new_df[col] = new_df[col].fillna(new_df[col].mean())
-                    elif method == "Мода":
-                        new_df[col] = new_df[col].fillna(new_df[col].mode()[0])
-                    elif method == "Константа":
-                        new_df[col] = new_df[col].fillna(fill_const.get(col, 0))
+                    if method == "Медиана":  new_df[col] = new_df[col].fillna(new_df[col].median())
+                    elif method == "Среднее": new_df[col] = new_df[col].fillna(new_df[col].mean())
+                    elif method == "Мода":    new_df[col] = new_df[col].fillna(new_df[col].mode()[0])
+                    elif method == "Константа": new_df[col] = new_df[col].fillna(fill_const.get(col,0))
                 st.session_state.df = new_df
                 st.session_state.cleaning_log.append({
-                    "op": "fill_missing",
-                    "methods":   dict(fill_methods),
-                    "constants": {k: v for k, v in fill_const.items()},
-                })
-                st.success("Пропуски заполнены!")
-                st.rerun()
+                    "op":"fill_missing","methods":dict(fill_methods),
+                    "constants":{k:v for k,v in fill_const.items()}})
+                st.success("Пропуски заполнены!"); st.rerun()
 
         st.divider()
         col_r, col_d = st.columns(2)
@@ -972,8 +610,7 @@ with tab_eda:
             if st.button("🔄 Сброс к исходным данным"):
                 st.session_state.df = st.session_state.raw_df.copy()
                 st.session_state.custom_features = []
-                st.session_state.cleaning_log.append({"op": "reset"})
-                st.rerun()
+                st.session_state.cleaning_log.append({"op":"reset"}); st.rerun()
         with col_d:
             st.download_button("💾 Скачать очищенный CSV",
                                df.to_csv(index=False).encode('utf-8'),
@@ -982,11 +619,9 @@ with tab_eda:
     st.subheader("2. Feature Engineering")
     with st.expander("🏗️ Создать и управлять признаками", expanded=True):
         st.write("Операторы: `+`, `-`, `*`, `/`, `**`. Например: `(SibSp + Parch) * Fare`")
-        cf1, cf2, cf3 = st.columns([3, 1, 1])
-        with cf1:
-            formula = st.text_input("Формула:", placeholder="SibSp + Parch + 1")
-        with cf2:
-            new_feat_name = st.text_input("Название:", placeholder="FamilySize")
+        cf1, cf2, cf3 = st.columns([3,1,1])
+        formula       = cf1.text_input("Формула:", placeholder="SibSp + Parch + 1")
+        new_feat_name = cf2.text_input("Название:", placeholder="FamilySize")
         with cf3:
             st.write(""); st.write("")
             if st.button("➕ Создать"):
@@ -998,54 +633,45 @@ with tab_eda:
                         if new_feat_name not in st.session_state.custom_features:
                             st.session_state.custom_features.append(new_feat_name)
                         st.session_state.cleaning_log.append({
-                            "op": "feature_engineering",
-                            "name": new_feat_name, "formula": formula})
-                        st.success(f"Признак '{new_feat_name}' создан!")
-                        st.rerun()
+                            "op":"feature_engineering","name":new_feat_name,"formula":formula})
+                        st.success(f"Признак '{new_feat_name}' создан!"); st.rerun()
                     except Exception as e:
                         st.error(f"Ошибка: {e}")
                 else:
                     st.warning("Заполни формулу и название.")
-
         if st.session_state.custom_features:
-            st.divider()
-            st.write("**Созданные признаки:**")
+            st.divider(); st.write("**Созданные признаки:**")
             for feat in st.session_state.custom_features:
-                fc1, fc2 = st.columns([4, 1])
+                fc1, fc2 = st.columns([4,1])
                 fc1.code(feat)
                 if fc2.button("🗑️", key=f"del_{feat}"):
                     if feat in df.columns:
                         st.session_state.df = df.drop(columns=[feat])
-                    st.session_state.custom_features.remove(feat)
-                    st.rerun()
+                    st.session_state.custom_features.remove(feat); st.rerun()
 
     st.divider()
     st.subheader("3. Интерактивные графики")
     gc1, gc2, gc3 = st.columns(3)
     with gc1:
-        chart_type = st.selectbox("Тип:", ["Матрица корреляций", "Гистограмма",
-                                           "Диаграмма рассеяния", "Ящик с усами"])
+        chart_type = st.selectbox("Тип:", ["Матрица корреляций","Гистограмма",
+                                            "Диаграмма рассеяния","Ящик с усами"])
     if chart_type != "Матрица корреляций":
-        with gc2:
-            x_axis = st.selectbox("Ось X:", df.columns)
-        with gc3:
-            y_axis = st.selectbox("Ось Y / Цвет:", ["Нет"] + list(df.columns))
+        with gc2: x_axis = st.selectbox("Ось X:", df.columns)
+        with gc3: y_axis = st.selectbox("Ось Y / Цвет:", ["Нет"] + list(df.columns))
 
     if chart_type == "Гистограмма":
-        fig = px.histogram(df, x=x_axis, color=(y_axis if y_axis != "Нет" else None),
+        fig = px.histogram(df, x=x_axis, color=(y_axis if y_axis!="Нет" else None),
                            marginal="box", title=f"Распределение {x_axis}")
         st.plotly_chart(fig, use_container_width=True)
     elif chart_type == "Диаграмма рассеяния":
-        if y_axis == "Нет":
-            st.warning("Выбери Ось Y!")
+        if y_axis == "Нет": st.warning("Выбери Ось Y!")
         else:
             hue = st.selectbox("Цвет:", ["Нет"] + list(df.columns))
             fig = px.scatter(df, x=x_axis, y=y_axis,
-                             color=(hue if hue != "Нет" else None),
-                             title=f"{y_axis} vs {x_axis}")
+                             color=(hue if hue!="Нет" else None), title=f"{y_axis} vs {x_axis}")
             st.plotly_chart(fig, use_container_width=True)
     elif chart_type == "Ящик с усами":
-        fig = px.box(df, x=x_axis, color=(y_axis if y_axis != "Нет" else None),
+        fig = px.box(df, x=x_axis, color=(y_axis if y_axis!="Нет" else None),
                      title=f"Boxplot: {x_axis}")
         st.plotly_chart(fig, use_container_width=True)
     elif chart_type == "Матрица корреляций":
@@ -1056,70 +682,197 @@ with tab_eda:
             st.plotly_chart(fig, use_container_width=True)
 
 
-# ==========================================
+# ══════════════════════════════════════════════════════════════════════════════
 # ВКЛАДКА 2: ОБУЧЕНИЕ И ТЕСТЕР
-# ==========================================
+# ══════════════════════════════════════════════════════════════════════════════
 with tab_train:
     st.write("Настрой параметры и запусти обучение.")
 
-    tc1, tc2, tc3 = st.columns([1, 1, 1])
+    # ── Основные параметры ────────────────────────────────────────────────────
+    tc1, tc2, tc3 = st.columns([1,1,1])
     with tc1:
         target_col = st.selectbox("Целевая колонка (Target):", df.columns)
     with tc2:
         selected_model = st.selectbox("Алгоритм:",
-                                      ["Random Forest", "Gradient Boosting",
-                                       "Logistic Regression", "Ансамбль (Ensemble)"])
+            ["Random Forest","Gradient Boosting","Logistic Regression","Ансамбль (Ensemble)"])
     with tc3:
         if selected_model != "Ансамбль (Ensemble)":
-            n_trials = st.slider("Итерации Optuna", min_value=5, max_value=150, value=20, step=5)
+            n_trials = st.slider("Итерации Optuna", 5, 150, 20, 5)
         else:
-            st.info("Ансамбль использует фиксированные параметры.")
+            st.info("Ансамбль: фиксированные параметры.")
             n_trials = 1
 
-    cv_c1, cv_c2 = st.columns([2, 1])
+    cv_c1, cv_c2 = st.columns([2,1])
     with cv_c1:
         use_cv = st.toggle("Использовать Cross-Validation (K-Fold)",
-                           help="Честнее оценивает модель, но в K раз дольше.")
+                           help="Честнее оценивает модель, но медленнее в K раз.")
     with cv_c2:
         cv_folds = st.slider("Фолды", 3, 10, 5, disabled=not use_cv)
-
     if use_cv:
-        st.caption(f"⏱️ Всего обучений: {n_trials} × {cv_folds} = {n_trials * cv_folds}")
+        st.caption(f"⏱️ Всего обучений: {n_trials} × {cv_folds} = {n_trials*cv_folds}")
     if selected_model == "Logistic Regression":
         st.caption("ℹ️ При задаче регрессии автоматически заменится на Ridge.")
 
+    # ── Расширенные гиперпараметры (диапазоны поиска Optuna) ─────────────────
+    with st.expander("🔧 Пространство поиска гиперпараметров (Optuna)", expanded=False):
+        st.info(
+            "Задай диапазоны поиска для Optuna. "
+            "**Зауженные диапазоны** = более точный поиск в нужной области. "
+            "Используй для борьбы с переобучением: уменьши **max_depth**, "
+            "увеличь **min_samples_leaf**, уменьши **subsample**."
+        )
+
+        hp_ranges_user = {}   # будет передан в engine.train_and_evaluate()
+
+        if selected_model == "Random Forest":
+            c1, c2 = st.columns(2)
+            n_est_range = c1.slider(
+                "n_estimators (кол-во деревьев)", 10, 1000, (50, 300),
+                help="Больше деревьев = стабильнее, но медленнее. >300 даёт минимальный прирост.")
+            max_depth_range = c2.slider(
+                "max_depth (глубина дерева)", 1, 30, (3, 15),
+                help="⭐ Ключевой параметр! Уменьши верхнюю границу (до 5–8) чтобы снизить переобучение.")
+            c3, c4 = st.columns(2)
+            leaf_range = c3.slider(
+                "min_samples_leaf (мин. объектов в листе)", 1, 50, (1, 5),
+                help="Увеличь нижнюю границу (до 10–20) — более гладкие листья = меньше переобучения.")
+            split_range = c4.slider(
+                "min_samples_split (мин. объектов для разбиения)", 2, 50, (2, 10),
+                help="Больше = реже разбиваем узлы = менее сложная модель.")
+            max_feat = st.selectbox(
+                "max_features (признаков при разбиении)", ['sqrt', 'log2', 1.0, 0.5],
+                help="'sqrt' = √p — стандарт RF. 'log2' = log2(p). 1.0 = все признаки (медленнее).")
+            hp_ranges_user = {
+                'n_estimators':      n_est_range,
+                'max_depth':         max_depth_range,
+                'min_samples_leaf':  leaf_range,
+                'min_samples_split': split_range,
+                'max_features':      max_feat,
+            }
+            # Подсказки по борьбе с переобучением
+            if max_depth_range[1] > 10:
+                st.warning("⚠️ max_depth > 10 может привести к переобучению. "
+                           "Попробуй ограничить до (3, 7).")
+            if leaf_range[0] < 2 and leaf_range[1] < 3:
+                st.info("💡 min_samples_leaf=(1,2) → маленькие листья → риск переобучения. "
+                        "Попробуй (5, 20).")
+
+        elif selected_model == "Gradient Boosting":
+            c1, c2 = st.columns(2)
+            n_est_range = c1.slider("n_estimators", 10, 1000, (50, 300))
+            depth_range  = c2.slider(
+                "max_depth (глубина дерева)", 1, 15, (3, 10),
+                help="GB деревья намеренно мелкие (слабые ученики). 3–5 = оптимально.")
+            c3, c4 = st.columns(2)
+            lr_range = c3.slider(
+                "learning_rate (шаг обучения)", 0.001, 0.5, (0.01, 0.3),
+                help="Малый lr + больше деревьев = лучше. Уменьши lr и увеличь n_estimators.")
+            sub_range = c4.slider(
+                "subsample (доля выборки на дерево)", 0.3, 1.0, (0.7, 1.0),
+                help="⭐ Ключевой параметр против переобучения! < 1.0 = стохастический GB."
+                     " Попробуй (0.5, 0.8) при переобучении.")
+            leaf_range = st.slider(
+                "min_samples_leaf", 1, 50, (1, 5),
+                help="Больше = менее детальные листья = меньше переобучения.")
+            hp_ranges_user = {
+                'n_estimators':     n_est_range,
+                'max_depth':        depth_range,
+                'learning_rate':    lr_range,
+                'subsample':        sub_range,
+                'min_samples_leaf': leaf_range,
+            }
+            if sub_range[1] == 1.0 and depth_range[1] >= 8:
+                st.warning("⚠️ subsample=1.0 + max_depth≥8 → высокий риск переобучения. "
+                           "Установи subsample=(0.5, 0.8).")
+
+        elif selected_model == "Logistic Regression":
+            c1, c2 = st.columns(2)
+            c_range = c1.slider(
+                "C (обратная регуляризация, классификация)", 0.001, 50.0, (0.01, 20.0),
+                help="Малый C → сильная L2-регуляризация → простая модель. "
+                     "При переобучении уменьши верхнюю границу до 1–5.")
+            alpha_range = c2.slider(
+                "alpha (Ridge, регрессия)", 0.001, 100.0, (0.01, 50.0),
+                help="Большой alpha → сильная L2-регуляризация. "
+                     "При переобучении увеличь нижнюю границу.")
+            hp_ranges_user = {
+                'C':     c_range,
+                'alpha': alpha_range,
+            }
+
+        elif selected_model == "Ансамбль (Ensemble)":
+            st.info("Ансамбль использует фиксированные параметры — "
+                    "разнородность алгоритмов обеспечивает стабильность без Optuna.")
+
+    # ── Кнопка запуска ────────────────────────────────────────────────────────
     if st.button("▶ Запустить ML пайплайн", use_container_width=True):
+
+        # ── КОНТЕЙНЕРЫ ПРОГРЕССА ─────────────────────────────────────────────
+        # st.empty() — «слот» в UI, который можно перезаписывать из callback.
+        # Это позволяет обновлять прогресс-бар без перезапуска всего скрипта.
+        prog_container  = st.container()
+        prog_bar        = prog_container.progress(0, text="Инициализация Optuna...")
+        stat_cols       = prog_container.columns(4)
+        cur_trial_ph    = stat_cols[0].empty()   # «Trial X / N»
+        cur_val_ph      = stat_cols[1].empty()   # «Текущий: 0.832»
+        best_val_ph     = stat_cols[2].empty()   # «Лучший: 0.847»
+        pct_ph          = stat_cols[3].empty()   # «Прогресс: 75%»
+        status_ph       = prog_container.empty() # статусная строка
+
+        # Коллбэк вызывается Optuna после каждого trial
+        def _progress_cb(trial_num: int, total: int,
+                         trial_val: float, best_val: float):
+            pct = trial_num / total
+            # text= отображается рядом с прогресс-баром
+            prog_bar.progress(pct, text=f"🔍 Optuna: Trial {trial_num}/{total}")
+            cur_trial_ph.metric("Trial", f"{trial_num}/{total}")
+            cur_val_ph.metric("Текущий", f"{trial_val:.4f}")
+            best_val_ph.metric("Лучший 🏆", f"{best_val:.4f}")
+            pct_ph.metric("Прогресс", f"{pct*100:.0f}%")
+
         with st.spinner(f"Обучаю {selected_model}..."):
             engine  = UniversalMLEngine(model_type=selected_model)
             metrics = engine.train_and_evaluate(
-                df, target_col, n_trials=n_trials, use_cv=use_cv, cv_folds=cv_folds)
+                df, target_col,
+                n_trials=n_trials,
+                use_cv=use_cv,
+                cv_folds=cv_folds,
+                hp_ranges=hp_ranges_user,
+                progress_callback=_progress_cb,
+            )
             explanation = engine.generate_human_explanation()
             engine.save_model("model.pkl")
 
-            st.session_state.metrics            = metrics
-            st.session_state.explanation        = explanation
-            st.session_state.trained_model_name = selected_model
-            st.session_state.task_type          = engine.task_type
-            st.session_state.is_trained         = True
-            st.session_state.train_df           = df.drop(columns=[target_col])
-            st.session_state.features           = engine.features
-            st.session_state.conf_matrix        = engine.conf_matrix
-            st.session_state.class_labels       = engine.class_labels
-            st.session_state['lc_data']         = engine.learning_curve_data
+        # Завершаем прогресс-бар
+        prog_bar.progress(1.0, text="✅ Обучение завершено!")
+        status_ph.success(f"Все {n_trials} trial(s) Optuna завершены. "
+                          f"Лучшие параметры: {engine.best_params}")
 
-            record = {
-                "⏰ Время":       datetime.datetime.now().strftime("%H:%M:%S"),
-                "Модель":        selected_model,
-                "Задача":        engine.task_type,
-                "Target":        target_col,
-                "CV":            f"{cv_folds}-fold" if use_cv else "hold-out",
-                "Optuna trials": n_trials,
-                "best_params":   dict(engine.best_params),
-                "cleaning_log":  list(st.session_state.cleaning_log),
-                **metrics,
-            }
-            st.session_state.experiment_history.append(record)
+        st.session_state.metrics            = metrics
+        st.session_state.explanation        = explanation
+        st.session_state.trained_model_name = selected_model
+        st.session_state.task_type          = engine.task_type
+        st.session_state.is_trained         = True
+        st.session_state.train_df           = df.drop(columns=[target_col])
+        st.session_state.features           = engine.features
+        st.session_state.conf_matrix        = engine.conf_matrix
+        st.session_state.class_labels       = engine.class_labels
+        st.session_state['lc_data']         = engine.learning_curve_data
 
+        record = {
+            "⏰ Время":       datetime.datetime.now().strftime("%H:%M:%S"),
+            "Модель":        selected_model,
+            "Задача":        engine.task_type,
+            "Target":        target_col,
+            "CV":            f"{cv_folds}-fold" if use_cv else "hold-out",
+            "Optuna trials": n_trials,
+            "best_params":   dict(engine.best_params),
+            "cleaning_log":  list(st.session_state.cleaning_log),
+            **metrics,
+        }
+        st.session_state.experiment_history.append(record)
+
+    # ── Результаты ───────────────────────────────────────────────────────────
     if st.session_state.is_trained:
         task_label = "классификация" if st.session_state.task_type == "classification" else "регрессия"
         task_icon  = "🔵" if st.session_state.task_type == "classification" else "📈"
@@ -1138,13 +891,12 @@ with tab_train:
             st.subheader("🧠 Интерпретация")
             st.info(st.session_state.explanation)
 
-        # ── Важность признаков ──────────────────────────────────────────
+        # ── Важность признаков ────────────────────────────────────────────
         try:
             data_pkl     = joblib.load("model.pkl")
             pipe_inner   = data_pkl["model"]
             inner_model  = pipe_inner.named_steps['model']
             preprocessor = pipe_inner.named_steps['preprocessor']
-
             if hasattr(inner_model, 'feature_importances_'):
                 importances = inner_model.feature_importances_
             elif hasattr(inner_model, 'coef_'):
@@ -1152,32 +904,27 @@ with tab_train:
                 importances = np.abs(coef[0]) if coef.ndim > 1 else np.abs(coef)
             else:
                 importances = None
-
             if importances is not None:
-                feat_names_fi = (list(preprocessor.transformers_[0][2])
-                                 + list(preprocessor.transformers_[1][2]))
+                feat_names_fi = (list(preprocessor.transformers_[0][2]) +
+                                 list(preprocessor.transformers_[1][2]))
                 fi_df = (pd.DataFrame({"Признак": feat_names_fi, "Важность": importances})
                            .sort_values("Важность", ascending=True).tail(15))
-                st.divider()
-                st.subheader("📌 Важность признаков")
+                st.divider(); st.subheader("📌 Важность признаков")
                 fig_fi = px.bar(fi_df, x="Важность", y="Признак", orientation="h",
                                 title="Топ-15 признаков", color="Важность",
                                 color_continuous_scale="Blues", text_auto=".3f")
-                fig_fi.update_layout(showlegend=False, height=max(300, 30 * len(fi_df)))
+                fig_fi.update_layout(showlegend=False, height=max(300, 30*len(fi_df)))
                 st.plotly_chart(fig_fi, use_container_width=True)
         except Exception:
             pass
 
-        # ── Confusion Matrix ────────────────────────────────────────────
-        if (st.session_state.task_type == "classification"
-                and st.session_state.conf_matrix is not None):
-            st.divider()
-            st.subheader("📉 Матрица ошибок")
+        # ── Confusion Matrix ─────────────────────────────────────────────
+        if st.session_state.task_type == "classification" and st.session_state.conf_matrix is not None:
+            st.divider(); st.subheader("📉 Матрица ошибок")
             cm     = np.array(st.session_state.conf_matrix)
             labels = [str(l) for l in st.session_state.class_labels]
             row_sums = cm.sum(axis=1, keepdims=True)
-            cm_norm  = np.where(row_sums > 0, cm / row_sums * 100, 0).round(1)
-
+            cm_norm  = np.where(row_sums > 0, cm/row_sums*100, 0).round(1)
             fig_cm = px.imshow(cm_norm, x=labels, y=labels,
                                color_continuous_scale="Blues",
                                labels=dict(x="Предсказано", y="Факт", color="%"),
@@ -1187,71 +934,67 @@ with tab_train:
                     fig_cm.add_annotation(x=labels[j], y=labels[i],
                                           text=f"{cm[i][j]}<br>({cm_norm[i][j]}%)",
                                           showarrow=False, font=dict(size=13, color="black"))
-            fig_cm.update_layout(height=max(300, 100 * len(labels)))
+            fig_cm.update_layout(height=max(300, 100*len(labels)))
             st.plotly_chart(fig_cm, use_container_width=True)
 
-        # ── Learning Curve — диагностика переобучения ──────────────────
+        # ── Learning Curve ───────────────────────────────────────────────
         lc_data = st.session_state.get('lc_data')
         if lc_data:
-            st.divider()
-            st.subheader("📈 Кривая обучения (Learning Curve)")
+            st.divider(); st.subheader("📈 Кривая обучения (Learning Curve)")
             st.caption(
-                "Показывает как меняется качество модели при увеличении размера обучающей выборки. "
-                "**Синяя** линия — качество на обучении, **красная** — на валидации (CV). "
+                "**Синяя** — качество на обучении, **красная** — на валидации (CV). "
                 "Широкая полоса = высокая дисперсия между фолдами."
             )
-            sizes   = lc_data['train_sizes']
-            tr_mean = lc_data['train_mean']
-            tr_std  = lc_data['train_std']
-            vl_mean = lc_data['val_mean']
-            vl_std  = lc_data['val_std']
-            sc_name = lc_data['scoring'].upper()
-
+            sizes  = lc_data['train_sizes']
+            tr_m   = lc_data['train_mean']; tr_s = lc_data['train_std']
+            vl_m   = lc_data['val_mean'];   vl_s = lc_data['val_std']
+            sc_name= lc_data['scoring'].upper()
             fig_lc = go.Figure()
             fig_lc.add_trace(go.Scatter(
-                x=sizes + sizes[::-1],
-                y=[m+s for m, s in zip(tr_mean, tr_std)] +
-                  [m-s for m, s in zip(tr_mean[::-1], tr_std[::-1])],
+                x=sizes+sizes[::-1],
+                y=[m+s for m,s in zip(tr_m,tr_s)]+[m-s for m,s in zip(tr_m[::-1],tr_s[::-1])],
                 fill='toself', fillcolor='rgba(55,138,221,0.15)',
-                line=dict(color='rgba(0,0,0,0)'), showlegend=False,
-            ))
+                line=dict(color='rgba(0,0,0,0)'), showlegend=False))
             fig_lc.add_trace(go.Scatter(
-                x=sizes + sizes[::-1],
-                y=[m+s for m, s in zip(vl_mean, vl_std)] +
-                  [m-s for m, s in zip(vl_mean[::-1], vl_std[::-1])],
+                x=sizes+sizes[::-1],
+                y=[m+s for m,s in zip(vl_m,vl_s)]+[m-s for m,s in zip(vl_m[::-1],vl_s[::-1])],
                 fill='toself', fillcolor='rgba(231,76,60,0.12)',
-                line=dict(color='rgba(0,0,0,0)'), showlegend=False,
-            ))
-            fig_lc.add_trace(go.Scatter(
-                x=sizes, y=tr_mean, mode='lines+markers',
-                name='Обучение', line=dict(color='#378add', width=2), marker=dict(size=7),
-            ))
-            fig_lc.add_trace(go.Scatter(
-                x=sizes, y=vl_mean, mode='lines+markers',
-                name='Валидация (CV)', line=dict(color='#e74c3c', width=2), marker=dict(size=7),
-            ))
-            fig_lc.update_layout(
-                title=f'Learning Curve — {sc_name}',
+                line=dict(color='rgba(0,0,0,0)'), showlegend=False))
+            fig_lc.add_trace(go.Scatter(x=sizes, y=tr_m, mode='lines+markers',
+                name='Обучение', line=dict(color='#378add', width=2), marker=dict(size=7)))
+            fig_lc.add_trace(go.Scatter(x=sizes, y=vl_m, mode='lines+markers',
+                name='Валидация (CV)', line=dict(color='#e74c3c', width=2), marker=dict(size=7)))
+            fig_lc.update_layout(title=f'Learning Curve — {sc_name}',
                 xaxis_title='Размер обучающей выборки (строк)',
-                yaxis_title=sc_name,
-                legend=dict(orientation='h', y=-0.2),
-                height=380,
-            )
+                yaxis_title=sc_name, legend=dict(orientation='h', y=-0.2), height=380)
             st.plotly_chart(fig_lc, use_container_width=True)
 
-            gap = round(tr_mean[-1] - vl_mean[-1], 3)
-            val_final = round(vl_mean[-1], 3)
+            gap = round(tr_m[-1] - vl_m[-1], 3)
+            val_final = round(vl_m[-1], 3)
+            bp = st.session_state.metrics
+
             if gap > 0.15:
+                # Даём конкретные советы по борьбе с переобучением на основе типа модели
+                tips = {
+                    "Random Forest":
+                        "Уменьши `max_depth` (до 5–7), увеличь `min_samples_leaf` (до 10–20).",
+                    "Gradient Boosting":
+                        "Уменьши `subsample` (до 0.5–0.7), снизь `max_depth` (до 3–5), "
+                        "уменьши `learning_rate`.",
+                    "Logistic Regression":
+                        "Уменьши `C` (до 0.01–0.1) или увеличь `alpha` (до 10–50).",
+                    "Ансамбль (Ensemble)": "Попробуй классическую модель с регуляризацией.",
+                }
+                tip = tips.get(st.session_state.trained_model_name, "")
                 st.error(
                     f"🔴 **Переобучение** — разрыв Train–Val = **{gap:.3f}**. "
-                    "Модель хорошо запомнила обучающие данные, но плохо обобщает. "
-                    "Попробуй: уменьшить сложность модели, добавить данных, включить CV."
+                    f"Модель запомнила обучающие данные, но плохо обобщает.\n\n"
+                    f"**Как исправить:** {tip} Или увеличь данные / включи CV."
                 )
             elif val_final < 0.6 and lc_data['scoring'] == 'accuracy':
                 st.warning(
                     f"🟡 **Недообучение** — Val {sc_name} = **{val_final:.3f}**. "
-                    "Модель слишком простая. "
-                    "Попробуй: увеличить n_estimators, глубину дерева, добавить признаки."
+                    "Попробуй: увеличить n_estimators, depth, добавить признаки через Feature Engineering."
                 )
             elif gap <= 0.05:
                 st.success(
@@ -1261,14 +1004,12 @@ with tab_train:
             else:
                 st.info(
                     f"🔵 **Умеренный разрыв** Train–Val = **{gap:.3f}**. "
-                    "Небольшое переобучение — добавление данных или CV может помочь."
+                    "Небольшое переобучение. Попробуй зауженные диапазоны гиперпараметров выше."
                 )
 
-        # ── SHAP Waterfall (загрузка CSV) ───────────────────────────────
-        st.divider()
-        st.subheader("🔍 SHAP Waterfall")
-        st.write("Загрузи CSV с одной строкой или объясни первую строку датасета.")
-        sh1, sh2 = st.columns([2, 1])
+        # ── SHAP ─────────────────────────────────────────────────────────
+        st.divider(); st.subheader("🔍 SHAP Waterfall")
+        sh1, sh2 = st.columns([2,1])
         with sh1:
             shap_file = st.file_uploader("CSV для объяснения", type="csv", key="shap_file")
         with sh2:
@@ -1287,54 +1028,37 @@ with tab_train:
                 se   = UniversalMLEngine(model_type=st.session_state.trained_model_name)
                 se.pipeline  = data["model"]
                 se.features  = data["features"]
-                se.task_type = data.get("task_type", "classification")
+                se.task_type = data.get("task_type","classification")
                 result = se.compute_shap_values(shap_row_df)
-
             if result is not None:
                 sv, bv, fn = result
                 top_n = min(12, len(sv))
                 idx   = np.argsort(np.abs(sv))[::-1][:top_n]
-                sv_t  = sv[idx]
-                fn_t  = [fn[i] for i in idx]
-
+                sv_t  = sv[idx]; fn_t = [fn[i] for i in idx]
                 running = bv
                 measures = ["absolute"]; texts = [f"{bv:.3f}"]
                 for v in sv_t:
                     measures.append("relative"); texts.append(f"{v:+.3f}"); running += v
                 measures.append("total"); texts.append(f"{running:.3f}")
-
                 fig_shap = go.Figure(go.Waterfall(
                     orientation="h", measure=measures,
-                    x=[bv] + list(sv_t) + [running],
-                    y=["Базовое значение"] + fn_t + ["Итоговое предсказание"],
+                    x=[bv]+list(sv_t)+[running],
+                    y=["Базовое значение"]+fn_t+["Итоговое предсказание"],
                     text=texts, textposition="outside",
-                    connector={"line": {"color": "rgba(63,63,63,0.4)"}},
-                    decreasing={"marker": {"color": "#3498db"}},
-                    increasing={"marker": {"color": "#e74c3c"}},
-                    totals={"marker":    {"color": "#2ecc71"}},
+                    connector={"line":{"color":"rgba(63,63,63,0.4)"}},
+                    decreasing={"marker":{"color":"#3498db"}},
+                    increasing={"marker":{"color":"#e74c3c"}},
+                    totals={"marker":{"color":"#2ecc71"}},
                 ))
                 fig_shap.update_layout(title=f"SHAP: топ-{top_n} признаков",
-                                       xaxis_title="Значение",
-                                       height=max(400, 40*(top_n+2)),
-                                       margin=dict(l=20, r=100, t=60, b=40))
+                    xaxis_title="Значение", height=max(400, 40*(top_n+2)),
+                    margin=dict(l=20, r=100, t=60, b=40))
                 st.plotly_chart(fig_shap, use_container_width=True)
-
-                push_up   = [(n, v) for n, v in zip(fn_t[:3], sv_t[:3]) if v > 0]
-                push_down = [(n, v) for n, v in zip(fn_t[:3], sv_t[:3]) if v < 0]
-                parts = []
-                if push_up:
-                    parts.append("**повышают**: " + ", ".join(f"**{n}** (+{v:.3f})" for n, v in push_up))
-                if push_down:
-                    parts.append("**снижают**: " + ", ".join(f"**{n}** ({v:.3f})" for n, v in push_down))
-                if parts:
-                    st.info("Для этого наблюдения: " + "; ".join(parts) + ".")
             else:
                 st.warning("⚠️ SHAP недоступен для данной комбинации модели и задачи.")
 
-        # ── Встроенный тестер ─────────────────────────────────────────
-        st.divider()
-        st.subheader("🧪 Встроенный тестер модели")
-        st.write("Введи значения признаков — получи предсказание прямо здесь.")
+        # ── Тестер ───────────────────────────────────────────────────────
+        st.divider(); st.subheader("🧪 Встроенный тестер модели")
         train_df_snap = st.session_state.train_df
 
         def _make_widget(feat, col_widget, key_prefix):
@@ -1342,14 +1066,14 @@ with tab_train:
                 col_data = train_df_snap[feat].dropna()
                 dtype    = col_data.dtype
                 n_unique = col_data.nunique()
-                if dtype in ['object', 'bool'] or str(dtype) == 'category':
-                    return col_widget.selectbox(feat, sorted(col_data.unique().tolist(), key=str),
-                                                key=f"{key_prefix}_{feat}")
+                if dtype in ['object','bool'] or str(dtype)=='category':
+                    return col_widget.selectbox(feat,
+                        sorted(col_data.unique().tolist(), key=str), key=f"{key_prefix}_{feat}")
                 if n_unique <= 15:
-                    return col_widget.selectbox(feat, sorted(col_data.unique().tolist()),
-                                                key=f"{key_prefix}_{feat}")
+                    return col_widget.selectbox(feat,
+                        sorted(col_data.unique().tolist()), key=f"{key_prefix}_{feat}")
                 median_val = col_data.median()
-                if dtype in ['int32', 'int64']:
+                if dtype in ['int32','int64']:
                     return col_widget.number_input(feat, value=int(median_val), step=1,
                                                    key=f"{key_prefix}_{feat}")
                 return col_widget.number_input(feat, value=float(median_val),
@@ -1373,16 +1097,15 @@ with tab_train:
                 row   = pd.DataFrame([input_values]).reindex(columns=feats)
                 pred  = model.predict(row)[0]
                 pred_py = pred.item() if hasattr(pred, 'item') else pred
-
                 if data.get("task_type") == "classification" and hasattr(model, "predict_proba"):
                     proba  = model.predict_proba(row)[0]
                     labels = data.get("class_labels") or list(range(len(proba)))
                     st.success(f"**Предсказание: {pred_py}**")
                     proba_df = pd.DataFrame({"Класс": [str(l) for l in labels],
-                                             "Вероятность": [round(float(p), 4) for p in proba]})
+                                             "Вероятность": [round(float(p),4) for p in proba]})
                     fig_p = px.bar(proba_df, x="Класс", y="Вероятность",
                                    color="Вероятность", color_continuous_scale="Blues",
-                                   range_y=[0, 1], title="Вероятности по классам", text_auto=".3f")
+                                   range_y=[0,1], title="Вероятности по классам", text_auto=".3f")
                     st.plotly_chart(fig_p, use_container_width=True)
                 else:
                     val_str = f"{pred_py:.4f}" if isinstance(pred_py, float) else str(pred_py)
@@ -1390,72 +1113,24 @@ with tab_train:
             except Exception as e:
                 st.error(f"Ошибка при предсказании: {e}")
 
-        if predict_btn and st.session_state.is_trained:
-            try:
-                data_shap = joblib.load("model.pkl")
-                se_t = UniversalMLEngine(model_type=st.session_state.trained_model_name)
-                se_t.pipeline  = data_shap["model"]
-                se_t.features  = data_shap["features"]
-                se_t.task_type = data_shap.get("task_type", "classification")
-                row_shap = pd.DataFrame([input_values]).reindex(columns=se_t.features)
-                with st.spinner("Считаю SHAP для введённых данных..."):
-                    res_t = se_t.compute_shap_values(row_shap)
-
-                if res_t is not None:
-                    sv_t2, bv_t2, fn_t2 = res_t
-                    top_n2 = min(12, len(sv_t2))
-                    idx_t2 = np.argsort(np.abs(sv_t2))[::-1][:top_n2]
-                    sv_show = sv_t2[idx_t2]
-                    fn_show = [fn_t2[i] for i in idx_t2]
-
-                    running2 = bv_t2
-                    measures2 = ["absolute"]; texts2 = [f"{bv_t2:.3f}"]
-                    for v in sv_show:
-                        measures2.append("relative"); texts2.append(f"{v:+.3f}"); running2 += v
-                    measures2.append("total"); texts2.append(f"{running2:.3f}")
-
-                    fig_st = go.Figure(go.Waterfall(
-                        orientation="h", measure=measures2,
-                        x=[bv_t2] + list(sv_show) + [running2],
-                        y=["Базовое значение"] + fn_show + ["Итоговое предсказание"],
-                        text=texts2, textposition="outside",
-                        connector={"line": {"color": "rgba(63,63,63,0.4)"}},
-                        decreasing={"marker": {"color": "#3498db"}},
-                        increasing={"marker": {"color": "#e74c3c"}},
-                        totals={"marker":    {"color": "#2ecc71"}},
-                    ))
-                    fig_st.update_layout(
-                        title=f"SHAP: почему именно такое предсказание (топ-{top_n2} признаков)",
-                        xaxis_title="Значение",
-                        height=max(400, 40 * (top_n2 + 2)),
-                        margin=dict(l=20, r=100, t=60, b=40),
-                    )
-                    st.plotly_chart(fig_st, use_container_width=True)
-            except Exception as e_shap:
-                st.caption(f"SHAP недоступен: {e_shap}")
-
         st.divider()
         try:
-            with open("model.pkl", "rb") as f_pkl:
+            with open("model.pkl","rb") as f_pkl:
                 model_bytes = f_pkl.read()
             st.download_button(
-                label="💾 Скачать модель (model.pkl)",
-                data=model_bytes,
+                label="💾 Скачать модель (model.pkl)", data=model_bytes,
                 file_name=f"model_{st.session_state.trained_model_name.replace(' ','_')}.pkl",
-                mime="application/octet-stream",
-            )
+                mime="application/octet-stream")
             st.caption("`data = joblib.load('model.pkl'); pred = data['model'].predict(X)`")
         except FileNotFoundError:
             pass
 
 
-# ==========================================
-# ВКЛАДКА 3: НЕЙРОСЕТИ
-# ==========================================
+# ══════════════════════════════════════════════════════════════════════════════
+# ВКЛАДКА 3: НЕЙРОСЕТИ (ИНС)
+# ══════════════════════════════════════════════════════════════════════════════
 with tab_nn:
-    st.write(
-        "Обучи нейронную сеть на тех же данных и сравни с классическими алгоритмами."
-    )
+    st.write("Обучи нейронную сеть на тех же данных и сравни с классическими алгоритмами.")
 
     nn_col1, nn_col2 = st.columns([1, 2])
     with nn_col1:
@@ -1466,81 +1141,180 @@ with tab_nn:
             available_nn.append("TabNet")
 
         if not PYTORCH_AVAILABLE:
-            err_detail = f"\n\n**Детали:** `{_PYTORCH_ERROR}`" if _PYTORCH_ERROR else ""
+            err_detail = f"\n\n`{_PYTORCH_ERROR}`" if _PYTORCH_ERROR else ""
             st.warning(
-                "⚠️ **PyTorch недоступен** — PyTorch MLP и TabNet отключены.  \n"
-                "Исправление:\n```\npip uninstall torch -y\n"
+                "⚠️ **PyTorch недоступен.**\n```\n"
+                "pip uninstall torch -y\n"
                 "pip install torch --index-url https://download.pytorch.org/whl/cpu\n```"
-                + err_detail
-            )
+                + err_detail)
         elif not TABNET_AVAILABLE:
             st.caption("ℹ️ TabNet: `pip install pytorch-tabnet`")
 
-        nn_model_type = st.selectbox(
-            "Архитектура нейросети:",
-            options=available_nn,
-            help=(
-                "sklearn MLP — полносвязная сеть без новых зависимостей\n"
-                "PyTorch MLP — кастомная сеть с BatchNorm и Dropout\n"
-                "TabNet — трансформер для таблиц (требует pytorch-tabnet)"
-            ),
-        )
+        nn_model_type = st.selectbox("Архитектура:", options=available_nn)
     with nn_col2:
         nn_target_col = st.selectbox("Целевая колонка:", df.columns, key="nn_target")
 
     st.divider()
+
+    # ── Параметры каждой архитектуры ─────────────────────────────────────────
     if nn_model_type == "sklearn MLP":
         st.markdown("**Параметры sklearn MLP**")
-        sc1, sc2, sc3 = st.columns(3)
-        layer1   = sc1.number_input("Нейроны в слое 1", 16, 512, 128, step=16)
-        layer2   = sc2.number_input("Нейроны в слое 2 (0 = один слой)", 0, 512, 64, step=16)
-        max_iter = sc3.number_input("Макс. итераций", 50, 1000, 300, step=50)
+        c1, c2, c3, c4 = st.columns(4)
+        layer1   = c1.number_input("Нейроны слой 1", 16, 512, 128, step=16)
+        layer2   = c2.number_input("Нейроны слой 2 (0=один слой)", 0, 512, 64, step=16)
+        max_iter = c3.number_input("Макс. итераций", 50, 1000, 300, step=50)
+        lr_sk    = c4.number_input("Learning rate", 0.0001, 0.1, 0.001, step=0.0001,
+                                   format="%.4f")
         hidden   = (layer1,) if layer2 == 0 else (layer1, layer2)
-        st.caption(
-            f"Архитектура: вход → {layer1}"
-            + (f" → {layer2}" if layer2 > 0 else "") +
-            " → выход | Early stopping включён"
-        )
+        st.caption(f"Архитектура: вход → {' → '.join(str(s) for s in hidden)} → выход | "
+                   f"Early stopping · lr={lr_sk}")
 
     elif nn_model_type == "PyTorch MLP":
         st.markdown("**Параметры PyTorch MLP**")
-        pc1, pc2, pc3, pc4 = st.columns(4)
-        pt_l1      = pc1.number_input("Слой 1", 32, 512, 256, step=32)
-        pt_l2      = pc2.number_input("Слой 2", 0, 512, 128, step=32)
-        pt_l3      = pc3.number_input("Слой 3 (0 = пропустить)", 0, 512, 64, step=32)
-        pt_dropout = pc4.slider("Dropout", 0.0, 0.7, 0.3, step=0.1)
-        pt_epochs  = st.slider("Макс. эпох", 20, 300, 100, step=10)
+        c1, c2, c3, c4 = st.columns(4)
+        pt_l1      = c1.number_input("Слой 1", 32, 512, 256, step=32)
+        pt_l2      = c2.number_input("Слой 2", 0, 512, 128, step=32)
+        pt_l3      = c3.number_input("Слой 3 (0=пропустить)", 0, 512, 64, step=32)
+        pt_dropout = c4.slider("Dropout", 0.0, 0.7, 0.3, step=0.1,
+                               help="0.3 = 30% нейронов случайно отключаются при обучении → регуляризация")
+        c5, c6, c7 = st.columns(3)
+        pt_lr      = c5.number_input("Learning rate", 0.0001, 0.05, 0.001, step=0.0001,
+                                     format="%.4f")
+        pt_epochs  = c6.slider("Макс. эпох", 20, 500, 100, step=10)
+        pt_patience= c7.slider("Early stopping patience", 5, 50, 15,
+                               help="Эпох без улучшения val_loss до остановки")
         hidden     = tuple(d for d in [pt_l1, pt_l2, pt_l3] if d > 0)
         st.caption(
-            f"Архитектура: вход → {' → '.join(str(d) for d in hidden)} → выход | "
-            f"BatchNorm + Dropout({pt_dropout}) | Early stopping"
+            f"Архитектура: вход → {' → '.join(str(d) for d in hidden)} → выход · "
+            f"BatchNorm + Dropout({pt_dropout}) · Adam lr={pt_lr} · patience={pt_patience}"
         )
 
     elif nn_model_type == "TabNet":
         st.markdown("**Параметры TabNet**")
-        tb1, tb2, tb3 = st.columns(3)
-        tb_steps  = tb1.slider("Шаги внимания (n_steps)", 2, 6, 3)
-        tb_nd     = tb2.slider("Размер n_d / n_a", 8, 64, 16, step=8)
-        tb_epochs = tb3.slider("Макс. эпох", 20, 300, 100, step=10)
-        st.caption(f"TabNet: {tb_steps} шагов × n_d={tb_nd} | Интерпретируемость через механизм внимания")
+        tb1, tb2, tb3, tb4 = st.columns(4)
+        tb_steps   = tb1.slider("n_steps (шаги внимания)", 2, 6, 3,
+                                help="Сколько раз сеть последовательно выбирает признаки")
+        tb_nd      = tb2.slider("n_d / n_a (размерности)", 8, 64, 16, step=8)
+        tb_epochs  = tb3.slider("Макс. эпох", 20, 300, 100, step=10)
+        tb_patience= tb4.slider("Patience", 5, 50, 15)
+        st.caption(f"TabNet: {tb_steps} шагов × n_d={tb_nd} · patience={tb_patience}")
 
+    # ── Кнопка запуска ────────────────────────────────────────────────────────
     if st.button("🚀 Обучить нейросеть", use_container_width=True):
+
+        # ── КОНТЕЙНЕРЫ ПРОГРЕССА ─────────────────────────────────────────────
+        nn_prog_box   = st.container()
+        nn_prog_bar   = nn_prog_box.progress(0, text="Инициализация...")
+        nn_stat_cols  = nn_prog_box.columns(4)
+        nn_epoch_ph   = nn_stat_cols[0].empty()   # «Эпоха X / N»
+        nn_tl_ph      = nn_stat_cols[1].empty()   # Train Loss
+        nn_vl_ph      = nn_stat_cols[2].empty()   # Val Loss
+        nn_eta_ph     = nn_stat_cols[3].empty()   # % прогресса
+        nn_chart_ph   = nn_prog_box.empty()        # Live Loss Curve (обновляется каждые N эпох)
+
+        # Хранилище для live-графика
+        _live_tl: list = []
+        _live_vl: list = []
+
+        def _nn_epoch_cb(epoch: int, max_ep: int,
+                         train_loss: float, val_loss: float,
+                         train_hist: list, val_hist: list):
+            """
+            Коллбэк вызывается из nn_engine каждые CALLBACK_EVERY эпох.
+            Обновляет прогресс-бар и live-график прямо во время обучения.
+            """
+            pct = min(epoch / max(max_ep, 1), 1.0)
+            nn_prog_bar.progress(pct, text=f"⚡ Эпоха {epoch}/{max_ep}")
+            nn_epoch_ph.metric("Эпоха", f"{epoch}/{max_ep}")
+            nn_tl_ph.metric("Train Loss", f"{train_loss:.4f}")
+            nn_vl_ph.metric("Val Loss", f"{val_loss:.4f}")
+            nn_eta_ph.metric("Прогресс", f"{pct*100:.0f}%")
+
+            # Обновляем live-график Loss Curve
+            if len(train_hist) >= 2:
+                ep_x = list(range(1, len(train_hist)+1))
+                fig_live = go.Figure()
+                fig_live.add_trace(go.Scatter(
+                    x=ep_x, y=train_hist, mode='lines', name='Train Loss',
+                    line=dict(color='#378add', width=2)))
+                if val_hist:
+                    fig_live.add_trace(go.Scatter(
+                        x=ep_x, y=val_hist, mode='lines', name='Val Loss',
+                        line=dict(color='#e74c3c', width=2, dash='dash')))
+                fig_live.update_layout(
+                    title=f"Loss Curve (live) — эпоха {epoch}/{max_ep}",
+                    xaxis_title="Эпоха", yaxis_title="Loss",
+                    legend=dict(orientation='h', y=-0.3),
+                    height=280,
+                    margin=dict(l=40, r=20, t=40, b=60),
+                )
+                nn_chart_ph.plotly_chart(fig_live, use_container_width=True)
+
         with st.spinner(f"Обучаю {nn_model_type}..."):
             try:
                 if nn_model_type == "sklearn MLP":
-                    engine_nn = SklearnMLPEngine(hidden_layers=hidden, max_iter=int(max_iter))
+                    engine_nn = SklearnMLPEngine(
+                        hidden_layers=hidden,
+                        max_iter=int(max_iter),
+                        learning_rate_init=float(lr_sk),
+                    )
                 elif nn_model_type == "PyTorch MLP":
                     if not PYTORCH_AVAILABLE:
-                        st.error("PyTorch недоступен.")
-                        st.stop()
+                        st.error("PyTorch недоступен."); st.stop()
                     engine_nn = PyTorchMLPEngine(
-                        hidden_dims=hidden, dropout=pt_dropout, max_epochs=int(pt_epochs))
+                        hidden_dims=hidden,
+                        dropout=pt_dropout,
+                        lr=float(pt_lr),
+                        max_epochs=int(pt_epochs),
+                        patience=int(pt_patience),
+                    )
                 elif nn_model_type == "TabNet":
                     engine_nn = TabNetEngine(
-                        n_steps=int(tb_steps), n_d=int(tb_nd), n_a=int(tb_nd),
-                        max_epochs=int(tb_epochs))
+                        n_steps=int(tb_steps),
+                        n_d=int(tb_nd),
+                        n_a=int(tb_nd),
+                        max_epochs=int(tb_epochs),
+                        patience=int(tb_patience),
+                    )
 
-                nn_metrics = engine_nn.train_and_evaluate(df, nn_target_col)
+                # sklearn MLP не поддерживает per-epoch callback — передаём None,
+                # для PyTorch MLP и TabNet передаём _nn_epoch_cb
+                cb = None if nn_model_type == "sklearn MLP" else _nn_epoch_cb
+
+                # Для sklearn MLP — анимированный спиннер с шагами
+                if nn_model_type == "sklearn MLP":
+                    nn_prog_bar.progress(0.1, text="Препроцессинг данных...")
+                    nn_epoch_ph.metric("Статус", "Обучение...")
+                    nn_tl_ph.metric("Архитектура", str(hidden))
+                    nn_vl_ph.metric("Early stopping", "включён")
+                    nn_eta_ph.metric("Итераций макс.", int(max_iter))
+
+                nn_metrics = engine_nn.train_and_evaluate(
+                    df, nn_target_col, epoch_callback=cb)
+
+                # Для sklearn MLP достраиваем Loss Curve из history после обучения
+                if nn_model_type == "sklearn MLP":
+                    nn_prog_bar.progress(1.0, text="✅ Обучение завершено!")
+                    th = engine_nn.train_history or {}
+                    tl = th.get('train_loss', [])
+                    vl = th.get('val_loss', [])
+                    n_it = th.get('n_iter', 0)
+                    if tl:
+                        ep_x = list(range(1, len(tl)+1))
+                        fig_sk = go.Figure()
+                        fig_sk.add_trace(go.Scatter(x=ep_x, y=tl, mode='lines',
+                            name='Train Loss', line=dict(color='#378add', width=2)))
+                        if vl:
+                            fig_sk.add_trace(go.Scatter(x=ep_x, y=vl, mode='lines',
+                                name='Val Loss (1−score)', line=dict(color='#e74c3c', width=2, dash='dash')))
+                        fig_sk.update_layout(
+                            title=f"Loss Curve — sklearn MLP (итераций: {n_it})",
+                            xaxis_title="Итерация", yaxis_title="Loss",
+                            legend=dict(orientation='h', y=-0.3),
+                            height=280, margin=dict(l=40, r=20, t=40, b=60))
+                        nn_chart_ph.plotly_chart(fig_sk, use_container_width=True)
+                    nn_epoch_ph.metric("Итераций", n_it)
+
                 engine_nn.save_model("model_nn.pkl")
 
                 st.session_state["nn_metrics"]      = nn_metrics
@@ -1551,16 +1325,12 @@ with tab_nn:
                 st.session_state["nn_class_labels"] = engine_nn.class_labels
                 st.session_state["nn_fi"] = (
                     engine_nn.feature_importances_
-                    if hasattr(engine_nn, "feature_importances_") else None
-                )
-                st.session_state["nn_history"] = getattr(engine_nn, "train_history", None)
-
-                if nn_model_type == "sklearn MLP":
-                    st.session_state["nn_max_epochs"] = int(max_iter)
-                elif nn_model_type == "PyTorch MLP":
-                    st.session_state["nn_max_epochs"] = int(pt_epochs)
-                elif nn_model_type == "TabNet":
-                    st.session_state["nn_max_epochs"] = int(tb_epochs)
+                    if hasattr(engine_nn, "feature_importances_") else None)
+                st.session_state["nn_history"]     = getattr(engine_nn, "train_history", None)
+                st.session_state["nn_max_epochs"]  = (
+                    int(max_iter) if nn_model_type == "sklearn MLP"
+                    else int(pt_epochs) if nn_model_type == "PyTorch MLP"
+                    else int(tb_epochs))
 
                 nn_record = {
                     "⏰ Время":       datetime.datetime.now().strftime("%H:%M:%S"),
@@ -1576,16 +1346,15 @@ with tab_nn:
                 st.session_state.experiment_history.append(nn_record)
 
             except Exception as e:
+                nn_prog_bar.progress(1.0, text="❌ Ошибка")
                 st.error(f"Ошибка обучения: {e}")
 
+    # ── Результаты ───────────────────────────────────────────────────────────
     if st.session_state.get("nn_metrics"):
         nn_task  = st.session_state["nn_task_type"]
         nn_icon  = "🔵" if nn_task == "classification" else "📈"
         nn_label = "классификация" if nn_task == "classification" else "регрессия"
-        st.success(
-            f"✅ **{st.session_state['nn_model_type']}** обучена! "
-            f"{nn_icon} {nn_label}"
-        )
+        st.success(f"✅ **{st.session_state['nn_model_type']}** обучена! {nn_icon} {nn_label}")
 
         nn1, nn2 = st.columns(2)
         with nn1:
@@ -1597,158 +1366,122 @@ with tab_nn:
             st.subheader("🧠 Архитектура")
             st.info(st.session_state["nn_explanation"])
 
-        # ── Loss Curve нейросети ────────────────────────────────────────
+        # ── Финальный Loss Curve (после обучения) ─────────────────────────
         nn_history = st.session_state.get("nn_history")
         if nn_history and nn_history.get('train_loss'):
-            st.divider()
-            st.subheader("📉 Кривые обучения (Train vs Validation Loss)")
+            st.divider(); st.subheader("📉 Loss Curve (финальный)")
             st.caption(
-                "**Синяя** линия — лосс на обучении, **красная пунктирная** — на валидации. "
-                "Зелёная вертикаль — лучшая эпоха (минимум val loss). "
-                "Большой разрыв train << val → переобучение."
+                "**Синяя** — лосс на обучении, **красная пунктирная** — на валидации. "
+                "Зелёная вертикаль — лучшая эпоха. Широкий разрыв train << val → переобучение."
             )
-            train_l = nn_history['train_loss']
-            val_l   = nn_history['val_loss']
-            epochs  = list(range(1, len(train_l) + 1))
+            tl_fin = nn_history['train_loss']
+            vl_fin = nn_history['val_loss']
+            ep_fin = list(range(1, len(tl_fin)+1))
 
-            fig_loss = go.Figure()
-            fig_loss.add_trace(go.Scatter(
-                x=epochs, y=train_l, mode='lines',
-                name='Train Loss', line=dict(color='#378add', width=2)
-            ))
-            if val_l:
-                fig_loss.add_trace(go.Scatter(
-                    x=epochs, y=val_l, mode='lines',
-                    name='Val Loss', line=dict(color='#e74c3c', width=2, dash='dash')
-                ))
-                best_epoch = int(np.argmin(val_l)) + 1
-                fig_loss.add_vline(
-                    x=best_epoch, line_dash='dot', line_color='#2ecc71',
-                    annotation_text=f'Лучшая эпоха: {best_epoch}',
-                    annotation_position='top right',
-                )
-
-            fig_loss.update_layout(
-                title='Динамика лосса по эпохам',
-                xaxis_title='Эпоха / Итерация',
-                yaxis_title='Loss',
-                legend=dict(orientation='h', y=-0.2),
-                height=360,
-            )
-            st.plotly_chart(fig_loss, use_container_width=True)
+            fig_final = go.Figure()
+            fig_final.add_trace(go.Scatter(x=ep_fin, y=tl_fin, mode='lines',
+                name='Train Loss', line=dict(color='#378add', width=2)))
+            if vl_fin:
+                fig_final.add_trace(go.Scatter(x=ep_fin, y=vl_fin, mode='lines',
+                    name='Val Loss', line=dict(color='#e74c3c', width=2, dash='dash')))
+                best_ep = int(np.argmin(vl_fin)) + 1
+                fig_final.add_vline(x=best_ep, line_dash='dot', line_color='#2ecc71',
+                    annotation_text=f'Лучшая эпоха: {best_ep}',
+                    annotation_position='top right')
+            fig_final.update_layout(
+                title='Динамика лосса по эпохам (финальный)',
+                xaxis_title='Эпоха / Итерация', yaxis_title='Loss',
+                legend=dict(orientation='h', y=-0.2), height=360)
+            st.plotly_chart(fig_final, use_container_width=True)
 
             # Интерпретация
-            final_train = train_l[-1]
-            final_val   = val_l[-1] if val_l else final_train
-            final_gap   = round(final_train - final_val, 4)
-            n_iter      = nn_history['n_iter']
-            max_ep_cfg  = st.session_state.get('nn_max_epochs', n_iter + 1)
-            stopped_early = n_iter < max_ep_cfg
+            ft = tl_fin[-1]; fv = vl_fin[-1] if vl_fin else ft
+            gap = round(ft - fv, 4)
+            n_it = nn_history['n_iter']
+            max_ep_cfg = st.session_state.get('nn_max_epochs', n_it+1)
 
-            if stopped_early:
-                st.success(
-                    f"🟢 **Early stopping** сработал на эпохе/итерации **{n_iter}** "
-                    f"из {max_ep_cfg} — переобучение предотвращено."
-                )
-            if abs(final_gap) > 0.3:
+            if n_it < max_ep_cfg:
+                st.success(f"🟢 **Early stopping** сработал на эпохе **{n_it}** из {max_ep_cfg}.")
+            if abs(gap) > 0.3:
                 st.error(
-                    f"🔴 **Переобучение** — Train Loss ({final_train:.4f}) "
-                    f"намного ниже Val Loss ({final_val:.4f}). "
-                    "Попробуй: увеличить Dropout, уменьшить число нейронов или эпох."
-                )
-            elif final_train > 0.5 and final_val > 0.5:
+                    f"🔴 **Переобучение** — Train Loss {ft:.4f} << Val Loss {fv:.4f} (разрыв {abs(gap):.4f}). "
+                    "Попробуй: увеличить **Dropout**, уменьшить размер слоёв, снизить число эпох.")
+            elif ft > 0.5 and fv > 0.5:
                 st.warning(
                     "🟡 **Недообучение** — оба лосса высокие. "
-                    "Попробуй увеличить число слоёв, нейронов или эпох."
-                )
+                    "Попробуй увеличить число нейронов, слоёв или эпох.")
             else:
-                st.info(
-                    f"🔵 Train Loss: **{final_train:.4f}** | "
-                    f"Val Loss: **{final_val:.4f}** | "
-                    f"Разрыв: {abs(final_gap):.4f}"
-                )
+                st.info(f"🔵 Train Loss: **{ft:.4f}** | Val Loss: **{fv:.4f}** | Разрыв: {abs(gap):.4f}")
 
-        # ── Сравнение с классическим ML ─────────────────────────────────
+        # ── Сравнение с классическим ML ───────────────────────────────────
         if st.session_state.is_trained:
-            st.divider()
-            st.subheader("⚖️ Сравнение: ИНС vs Классический ML")
-            classic_m = st.session_state.metrics
-            nn_m      = st.session_state["nn_metrics"]
+            st.divider(); st.subheader("⚖️ Сравнение: ИНС vs Классический ML")
+            classic_m   = st.session_state.metrics
+            nn_m        = st.session_state["nn_metrics"]
             common_keys = [k for k in classic_m if k in nn_m]
             if common_keys:
                 cmp_df = pd.DataFrame({
-                    "Метрика":        common_keys,
+                    "Метрика": common_keys,
                     st.session_state.trained_model_name: [classic_m[k] for k in common_keys],
                     st.session_state["nn_model_type"]:   [nn_m[k]      for k in common_keys],
                 })
-                cmp_melted = cmp_df.melt(id_vars="Метрика", var_name="Модель", value_name="Значение")
-                fig_cmp = px.bar(
-                    cmp_melted, x="Метрика", y="Значение", color="Модель",
+                cmp_melt = cmp_df.melt(id_vars="Метрика", var_name="Модель", value_name="Значение")
+                fig_cmp = px.bar(cmp_melt, x="Метрика", y="Значение", color="Модель",
                     barmode="group",
                     title=f"{st.session_state.trained_model_name} vs {st.session_state['nn_model_type']}",
                     text_auto=".3f",
                     color_discrete_map={
                         st.session_state.trained_model_name: "#378add",
                         st.session_state["nn_model_type"]:   "#e74c3c",
-                    },
-                )
+                    })
                 st.plotly_chart(fig_cmp, use_container_width=True)
-
-                first_key = common_keys[0]
-                classic_v = classic_m[first_key]
-                nn_v      = nn_m[first_key]
-                margin    = abs(nn_v - classic_v)
-                if margin < 0.005:
-                    st.info(f"🤝 Результаты практически одинаковы (Δ={margin:.3f}).")
-                elif nn_v > classic_v:
-                    st.success(f"🏆 Нейросеть выигрывает по {first_key}: **{nn_v}** vs {classic_v}")
-                else:
-                    st.warning(f"⚡ Классический ML выигрывает по {first_key}: **{classic_v}** vs {nn_v}")
+                fk = common_keys[0]
+                cv, nv = classic_m[fk], nn_m[fk]
+                margin = abs(nv - cv)
+                if margin < 0.005: st.info(f"🤝 Результаты практически одинаковы (Δ={margin:.3f}).")
+                elif nv > cv:      st.success(f"🏆 Нейросеть выигрывает по {fk}: **{nv}** vs {cv}")
+                else:              st.warning(f"⚡ Классический ML выигрывает по {fk}: **{cv}** vs {nv}")
         else:
-            st.info("💡 Обучи классическую модель во вкладке 'Обучение и Тестер' чтобы сравнить результаты.")
+            st.info("💡 Обучи классическую модель во вкладке '⚙️ Обучение' чтобы сравнить.")
 
-        # ── Confusion Matrix ИНС ────────────────────────────────────────
-        if (nn_task == "classification" and st.session_state.get("nn_conf_matrix") is not None):
-            st.divider()
-            st.subheader("📉 Confusion Matrix (нейросеть)")
+        # ── Confusion Matrix ИНС ──────────────────────────────────────────
+        if nn_task == "classification" and st.session_state.get("nn_conf_matrix") is not None:
+            st.divider(); st.subheader("📉 Confusion Matrix (нейросеть)")
             cm     = np.array(st.session_state["nn_conf_matrix"])
             labels = [str(l) for l in st.session_state["nn_class_labels"]]
             row_sums = cm.sum(axis=1, keepdims=True)
-            cm_norm  = np.where(row_sums > 0, cm / row_sums * 100, 0).round(1)
+            cm_norm  = np.where(row_sums > 0, cm/row_sums*100, 0).round(1)
             fig_nn_cm = px.imshow(cm_norm, x=labels, y=labels,
-                                   color_continuous_scale="Reds",
-                                   labels=dict(x="Предсказано", y="Факт", color="%"),
-                                   title="Confusion Matrix ИНС", aspect="auto")
+                color_continuous_scale="Reds",
+                labels=dict(x="Предсказано", y="Факт", color="%"),
+                title="Confusion Matrix ИНС", aspect="auto")
             for i in range(len(labels)):
                 for j in range(len(labels)):
-                    fig_nn_cm.add_annotation(
-                        x=labels[j], y=labels[i],
+                    fig_nn_cm.add_annotation(x=labels[j], y=labels[i],
                         text=f"{cm[i][j]}<br>({cm_norm[i][j]}%)",
                         showarrow=False, font=dict(size=13, color="black"))
-            fig_nn_cm.update_layout(height=max(300, 100 * len(labels)))
+            fig_nn_cm.update_layout(height=max(300, 100*len(labels)))
             st.plotly_chart(fig_nn_cm, use_container_width=True)
 
-        # ── TabNet feature importances ──────────────────────────────────
+        # ── TabNet feature importances ────────────────────────────────────
         nn_fi = st.session_state.get("nn_fi")
         if nn_fi is not None and len(nn_fi) > 0:
-            st.divider()
-            st.subheader("📌 Важность признаков (TabNet attention)")
+            st.divider(); st.subheader("📌 Важность признаков (TabNet attention)")
             fi_names = df.drop(columns=[nn_target_col]).columns.tolist()
             if len(fi_names) == len(nn_fi):
                 fi_df = (pd.DataFrame({"Признак": fi_names, "Важность": nn_fi})
                            .sort_values("Важность", ascending=True).tail(15))
                 fig_fi_nn = px.bar(fi_df, x="Важность", y="Признак", orientation="h",
-                                   title="Важность признаков по механизму внимания TabNet",
-                                   color="Важность", color_continuous_scale="Reds",
-                                   text_auto=".3f")
+                    title="Важность признаков по механизму внимания TabNet",
+                    color="Важность", color_continuous_scale="Reds", text_auto=".3f")
                 fig_fi_nn.update_layout(showlegend=False, height=max(300, 30*len(fi_df)))
                 st.plotly_chart(fig_fi_nn, use_container_width=True)
                 st.caption("Важность = среднее внимание по всем шагам sequential attention.")
 
 
-# ==========================================
+# ══════════════════════════════════════════════════════════════════════════════
 # ВКЛАДКА 4: ИСТОРИЯ ЭКСПЕРИМЕНТОВ
-# ==========================================
+# ══════════════════════════════════════════════════════════════════════════════
 with tab_history:
     st.subheader("📜 История экспериментов")
     history = st.session_state.experiment_history
@@ -1757,23 +1490,20 @@ with tab_history:
         st.info("Пока нет запущенных экспериментов. Обучи хотя бы одну модель.")
     else:
         display_cols = [k for k in history[0].keys()
-                        if k not in {"best_params", "cleaning_log"}]
+                        if k not in {"best_params","cleaning_log"}]
         hist_df = pd.DataFrame(history)[display_cols]
         st.dataframe(hist_df, use_container_width=True)
 
-        hc1, hc2 = st.columns([1, 1])
+        hc1, hc2 = st.columns([1,1])
         with hc1:
             if st.button("🗑️ Очистить историю"):
-                st.session_state.experiment_history = []
-                st.rerun()
+                st.session_state.experiment_history = []; st.rerun()
         with hc2:
-            st.download_button(
-                "💾 Скачать историю (CSV)",
+            st.download_button("💾 Скачать историю (CSV)",
                 hist_df.to_csv(index=False).encode("utf-8"),
                 file_name="experiment_history.csv", mime="text/csv")
 
         st.divider()
-
         numeric_cols = hist_df.select_dtypes(include='number').columns.tolist()
         if numeric_cols:
             metric_to_plot = st.selectbox("Метрика для сравнения:", numeric_cols)
@@ -1786,74 +1516,54 @@ with tab_history:
             st.plotly_chart(fig_h, use_container_width=True)
 
         st.divider()
-
-        # ── Генератор Python-скрипта ────────────────────────────────────
         st.subheader("🐍 Скачать Python-скрипт для выбранного эксперимента")
         st.write(
-            "Выбери эксперимент — получишь полностью воспроизводимый `.py` файл. "
-            "Для **классического ML**: EDA + очистка + обучение с параметрами Optuna + оценка + сохранение. "
-            "Для **нейросетей**: препроцессинг + архитектура + обучение с early stopping + график лосса."
+            "Выбери эксперимент — получишь воспроизводимый `.py` файл. "
+            "**Классический ML**: EDA + очистка + Optuna-параметры + оценка. "
+            "**Нейросети**: архитектура + цикл обучения + loss curve."
         )
 
         exp_labels = [
             f"{i+1}. {r['⏰ Время']} | {r['Модель']} | target={r['Target']} | {r['CV']}"
             for i, r in enumerate(history)
         ]
-        selected_idx = st.selectbox("Выбери эксперимент:", range(len(exp_labels)),
-                                    format_func=lambda i: exp_labels[i])
+        selected_idx    = st.selectbox("Выбери эксперимент:", range(len(exp_labels)),
+                                       format_func=lambda i: exp_labels[i])
         selected_record = history[selected_idx]
+        is_nn_record    = selected_record.get("Модель","").startswith("ИНС:")
 
-        # Определяем тип: ИНС или классика
-        is_nn_record = selected_record.get("Модель", "").startswith("ИНС:")
-
-        with st.expander("ℹ️ Параметры выбранного эксперимента", expanded=False):
-            info_rows = {k: v for k, v in selected_record.items()
-                         if k not in {"best_params", "cleaning_log"}}
-            st.json(info_rows)
-            bp = selected_record.get("best_params", {})
+        with st.expander("ℹ️ Параметры эксперимента", expanded=False):
+            st.json({k:v for k,v in selected_record.items()
+                     if k not in {"best_params","cleaning_log"}})
+            bp = selected_record.get("best_params",{})
             if bp and "Инфо" not in bp:
-                st.markdown("**Параметры модели:**")
-                st.json(bp)
-            cl = selected_record.get("cleaning_log", [])
+                st.markdown("**Параметры модели:**"); st.json(bp)
+            cl = selected_record.get("cleaning_log",[])
             if cl:
                 st.markdown(f"**Шагов очистки:** {len(cl)}")
                 for step in cl:
-                    st.write(f"- `{step['op']}`:", {k: v for k, v in step.items() if k != 'op'})
+                    st.write(f"- `{step['op']}`:", {k:v for k,v in step.items() if k!='op'})
 
-        # Индикатор типа скрипта
-        if is_nn_record:
-            nn_badge = selected_record["Модель"].replace("ИНС: ", "")
-            st.info(f"🧠 Будет сгенерирован скрипт для нейросети: **{nn_badge}**")
-        else:
-            st.info(f"⚙️ Будет сгенерирован скрипт для классического ML: **{selected_record['Модель']}**")
+        badge = "🧠 Нейросеть: **" + selected_record["Модель"].replace("ИНС: ","") + "**" \
+            if is_nn_record else "⚙️ Классический ML: **" + selected_record["Модель"] + "**"
+        st.info(badge)
 
         if st.button("⬇️ Сгенерировать и скачать .py скрипт", use_container_width=True):
             if is_nn_record:
-                # ── ИНС: генерируем скрипт нейросети ───────────────────
-                script_code = generate_nn_script(
-                    record=selected_record,
-                    dataset_filename=dataset_filename,
-                )
-                nn_type_safe = selected_record["Модель"].replace("ИНС: ", "").replace(" ", "_")
-                fname = f"nn_solution_{nn_type_safe}_{selected_record['Target']}.py"
+                script_code = generate_nn_script(selected_record, dataset_filename)
+                nn_safe = selected_record["Модель"].replace("ИНС: ","").replace(" ","_")
+                fname = f"nn_solution_{nn_safe}_{selected_record['Target']}.py"
             else:
-                # ── Классика: генерируем стандартный скрипт ─────────────
                 script_code = generate_script(
-                    record=selected_record,
-                    cleaning_log=selected_record.get("cleaning_log", []),
-                    dataset_filename=dataset_filename,
-                )
-                model_safe = (selected_record["Модель"]
-                              .replace(" ", "_").replace("(", "").replace(")", ""))
-                fname = f"ml_solution_{model_safe}_{selected_record['Target']}.py"
+                    selected_record,
+                    selected_record.get("cleaning_log",[]),
+                    dataset_filename)
+                ms = (selected_record["Модель"]
+                      .replace(" ","_").replace("(","").replace(")",""))
+                fname = f"ml_solution_{ms}_{selected_record['Target']}.py"
 
-            st.download_button(
-                label="📥 Скачать .py файл",
-                data=script_code.encode("utf-8"),
-                file_name=fname,
-                mime="text/x-python",
-                use_container_width=True,
-            )
+            st.download_button("📥 Скачать .py файл", data=script_code.encode("utf-8"),
+                               file_name=fname, mime="text/x-python", use_container_width=True)
             st.divider()
-            st.markdown("**Превью сгенерированного скрипта:**")
+            st.markdown("**Превью скрипта:**")
             st.code(script_code, language="python")
